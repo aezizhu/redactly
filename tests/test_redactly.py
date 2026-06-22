@@ -23,6 +23,7 @@ import httpx
 import pytest
 
 from redactly.adapters.anthropic import AnthropicAdapter
+from redactly.adapters.openai_responses import OpenAIResponsesAdapter
 from redactly.config import Allowlist, Config
 from redactly.detectors import detect
 from redactly.engine import Redactor
@@ -231,3 +232,56 @@ def test_proxy_fail_closed_on_unknown_path():
         assert len(mock.received) == 0
     finally:
         mock.stop()
+
+
+# --- OpenAI Responses adapter (Codex) -------------------------------------
+
+
+def test_openai_responses_redact_request():
+    a = OpenAIResponsesAdapter()
+    red = Redactor(Vault("s"))
+    body = json.dumps(
+        {
+            "model": "gpt-5",
+            "instructions": "you help; ping ops@example.com",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "key sk-abcdefghijklmnopqrstuvwxyz123456"}],
+                },
+                {"type": "local_shell_call_output", "output": "leaked AKIAIOSFODNN7EXAMPLE here"},
+                {"type": "reasoning", "encrypted_content": "OPAQUE-sk-zzzzzzzzzzzzzzzzzzzzzzzz-BLOB"},
+            ],
+        }
+    ).encode()
+    out = a.redact_request(body, red)
+    assert b"ops@example.com" not in out  # instructions redacted
+    assert b"sk-abcdefghijklmnopqrstuvwxyz123456" not in out  # message redacted
+    assert b"AKIAIOSFODNN7EXAMPLE" not in out  # tool output redacted
+    # reasoning.encrypted_content is opaque and must be forwarded untouched,
+    # even though it contains a key-shaped string.
+    assert b"OPAQUE-sk-zzzzzzzzzzzzzzzzzzzzzzzz-BLOB" in out
+    with pytest.raises(Exception):
+        a.redact_request(b"{ not json", red)
+
+
+def test_openai_responses_unmask_delta():
+    v = Vault("s")
+    token = v.token_for("secret@example.com", "EMAIL")
+
+    async def src():
+        yield (
+            "event: response.output_text.delta\n"
+            'data: {"type":"response.output_text.delta","delta":%s}\n\n' % json.dumps("got " + token)
+        ).encode()
+
+    async def collect():
+        out = b""
+        async for c in OpenAIResponsesAdapter().unmask_stream(src(), v):
+            out += c
+        return out.decode("utf-8")
+
+    result = _run(collect())
+    assert "secret@example.com" in result
+    assert token not in result

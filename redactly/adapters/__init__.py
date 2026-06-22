@@ -19,11 +19,21 @@ from __future__ import annotations
 from .anthropic import AnthropicAdapter
 from .base import Adapter
 from .openai_chat import OpenAIChatAdapter
+from .openai_responses import OpenAIResponsesAdapter
 
 # Ordered registry the proxy iterates to pick an adapter (first match wins).
+# Paths are disjoint (/v1/messages, /v1/chat/completions, /v1/responses), so
+# order is not load-bearing here.
 ADAPTERS: tuple[Adapter, ...] = (
     AnthropicAdapter(),
     OpenAIChatAdapter(),
+    OpenAIResponsesAdapter(),
 )
 
-__all__ = ["Adapter", "AnthropicAdapter", "OpenAIChatAdapter", "ADAPTERS"]
+__all__ = [
+    "Adapter",
+    "AnthropicAdapter",
+    "OpenAIChatAdapter",
+    "OpenAIResponsesAdapter",
+    "ADAPTERS",
+]

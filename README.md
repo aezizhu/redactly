@@ -98,12 +98,13 @@ that stands the proxy up and **fails closed** if the route isn't active.
 |---|---|
 | Feasibility & threat-model verification | ✅ Done — [`docs/VERIFICATION.md`](docs/VERIFICATION.md) |
 | Architecture & spec | ✅ Done |
-| Redaction engine (text, reversible vault) | ✅ Done — 8/8 tests |
-| Local proxy (streaming, fail-closed) | ✅ Done — 8/8 tests |
-| Anthropic + OpenAI-Chat adapters | ✅ Done |
+| Redaction engine (text, reversible vault) | ✅ Done — 10/10 tests |
+| Local proxy (streaming, fail-closed) | ✅ Done — 10/10 tests |
+| Adapters: Anthropic, OpenAI-Chat, OpenAI-Responses | ✅ Done |
 | **Claude Code plugin** (slash commands + fail-closed guard hook) | ✅ Done |
+| Launchers: `wrap claude` + `wrap codex` | ✅ Done (Codex: API-key mode) |
 | Image redaction (Apple Vision) | 🔨 Planned |
-| OpenAI-Responses / Gemini adapters, more launchers | 🔨 Planned |
+| Gemini / Copilot adapters + launchers | 🔨 Planned |
 
 ### Supported tools
 

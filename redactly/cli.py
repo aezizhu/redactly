@@ -41,6 +41,26 @@ REDACTLY_HOME = Path.home() / ".redactly"
 RULES_PATH = REDACTLY_HOME / "rules.json"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# Per-tool launch config for `redactly wrap <tool>`. Each tool gets its own
+# proxy instance + upstream, isolated by port, so one redactor can serve
+# tools that talk to different providers.
+WRAP_TOOLS: dict[str, dict] = {
+    "claude": {
+        "port": DEFAULT_PORT,
+        "upstream": "https://api.anthropic.com",
+        "env": "ANTHROPIC_BASE_URL",
+        "base_suffix": "",
+        "write_claude_settings": True,
+    },
+    "codex": {
+        "port": DEFAULT_PORT + 1,
+        "upstream": "https://api.openai.com",
+        "env": "OPENAI_BASE_URL",
+        "base_suffix": "/v1",
+        "write_claude_settings": False,
+    },
+}
+
 
 @click.group()
 @click.version_option(__version__, prog_name="redactly")
@@ -68,25 +88,32 @@ def proxy_cmd(host: str, port: int, upstream: str | None) -> None:
     "wrap",
     context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
 )
-@click.argument("tool", type=click.Choice(["claude"]))
-@click.option("--port", default=DEFAULT_PORT, show_default=True, type=int, help="Proxy port to ensure/route to.")
+@click.argument("tool", type=click.Choice(sorted(WRAP_TOOLS)))
+@click.option("--port", default=None, type=int, help="Override the proxy port (default: per-tool).")
 @click.argument("tool_args", nargs=-1, type=click.UNPROCESSED)
-def wrap_cmd(tool: str, port: int, tool_args: tuple[str, ...]) -> None:
-    """Run an AI coding tool with its traffic routed through Redactly."""
-    proxy_url = f"http://{DEFAULT_HOST}:{port}"
-    _ensure_proxy(port)
+def wrap_cmd(tool: str, port: int | None, tool_args: tuple[str, ...]) -> None:
+    """Run an AI coding tool (claude, codex) with its traffic routed through Redactly."""
+    spec = WRAP_TOOLS[tool]
+    port = port or spec["port"]
+    base_url = f"http://{DEFAULT_HOST}:{port}{spec['base_suffix']}"
+    _ensure_proxy(port, upstream=spec["upstream"])
 
     env = os.environ.copy()
-    env[CLAUDE_BASE_URL_KEY] = proxy_url
-    previous = _write_base_url(proxy_url)
+    env[spec["env"]] = base_url
+    previous = None
+    if spec["write_claude_settings"]:
+        previous = _write_base_url(f"http://{DEFAULT_HOST}:{port}")
 
     binary = shutil.which(tool) or tool
-    click.echo(f"redactly: routing {tool} through {proxy_url} (fail-closed)", err=True)
+    click.echo(
+        f"redactly: routing {tool} via {spec['env']}={base_url} -> {spec['upstream']} (fail-closed)",
+        err=True,
+    )
     try:
-        result = subprocess.run([binary, *tool_args], env=env)
-        rc = result.returncode
+        rc = subprocess.run([binary, *tool_args], env=env).returncode
     finally:
-        _restore_base_url(previous)
+        if spec["write_claude_settings"]:
+            _restore_base_url(previous)
     raise SystemExit(rc)
 
 
@@ -102,11 +129,15 @@ def _healthz(port: int, host: str = DEFAULT_HOST) -> bool:
         return False
 
 
-def _ensure_proxy(port: int, *, host: str = DEFAULT_HOST, timeout: float = 30.0) -> None:
+def _ensure_proxy(
+    port: int, *, host: str = DEFAULT_HOST, upstream: str | None = None, timeout: float = 30.0
+) -> None:
     """Start the proxy daemon (detached) if it is not already listening.
 
     Logs to a FILE (not a pipe — avoids the macOS 64KB pipe-buffer deadlock),
     detaches via ``start_new_session``, and polls ``/healthz`` until ready.
+    ``upstream`` (when given) is passed to the daemon as ``REDACT_UPSTREAM`` so
+    a per-tool proxy forwards to that tool's provider.
     """
     if _healthz(port, host):
         return
@@ -115,6 +146,8 @@ def _ensure_proxy(port: int, *, host: str = DEFAULT_HOST, timeout: float = 30.0)
     log_path = log_dir / "proxy.log"
     proxy_env = os.environ.copy()
     proxy_env.setdefault(ENV_RULES, str(RULES_PATH))
+    if upstream:
+        proxy_env[ENV_UPSTREAM] = upstream
     with open(log_path, "ab") as log:
         subprocess.Popen(
             [sys.executable, "-m", "redactly.cli", "proxy", "--host", host, "--port", str(port)],
