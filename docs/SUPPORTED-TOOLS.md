@@ -2,6 +2,9 @@
 
 **Which AI coding tools can Redactly protect, and exactly how.**
 
+> 🔧 Implementing a tool? **Build-ready per-tool specs** (launcher, auth, body adapter, fail-closed
+> gating, canary leak test) live in [`docs/integrations/`](integrations/).
+
 Redactly is a privacy redaction proxy for AI coding tools *generally* — not Claude Code only.
 One local, fail‑closed proxy plus a reversible session vault sits between your tool and the cloud.
 For each tool you (a) point that tool's **base‑URL env/config** at the local proxy and forward the

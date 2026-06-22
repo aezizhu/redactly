@@ -153,6 +153,7 @@ This is a guardrail against leaks, not a guarantee against a determined adversar
 ## Documentation
 
 - [`docs/SUPPORTED-TOOLS.md`](docs/SUPPORTED-TOOLS.md) — per-tool setup, status, and caveats for all eight tools (cited).
+- [`docs/integrations/`](docs/integrations/) — build-ready per-tool integration specs (Codex, Gemini, Copilot, Cursor, Windsurf).
 - [`docs/VERIFICATION.md`](docs/VERIFICATION.md) — what's actually possible in each supported tool (cited).
 - [`docs/LEARNINGS-headroom.md`](docs/LEARNINGS-headroom.md) — patterns & anti-patterns learned from the closest prior art.
 - `docs/ARCHITECTURE.md` — components, data flow, and design decisions *(coming with the first code drop)*.
