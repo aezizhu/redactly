@@ -6,6 +6,15 @@ build/
 *.o
 *.a
 
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.venv/
+venv/
+
 # Go
 /vendor/
 *.test

@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "redactly"
+version = "0.0.1"
+description = "Local, fail-closed redaction proxy for AI coding tools — mask secrets before they leave your machine."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+authors = [{ name = "Redactly" }]
+keywords = ["redaction", "privacy", "proxy", "pii", "secrets", "llm", "ai-coding"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+]
+dependencies = [
+    "fastapi>=0.110",
+    "httpx>=0.27",
+    "uvicorn>=0.29",
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+# Entry point: `redactly` → the click group exposed as redactly.cli:main.
+redactly = "redactly.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/redactly/redactly"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["redactly*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
