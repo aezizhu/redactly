@@ -10,7 +10,9 @@ Where the text lives:
   file contents — high secret density).
 
 NEVER touched: reasoning items' ``encrypted_content`` (an opaque server-signed
-blob — mutating it breaks the turn) and ``computer_call_output`` screenshots.
+blob — mutating it breaks the turn). FAIL-CLOSED (refused, never forwarded):
+``input_image`` / ``input_file`` parts and ``computer_call_output`` screenshots
+— un-redactable binary attachments the text-only engine cannot mask.
 
 Streamed response (SSE, typed events): text arrives in
 ``response.output_text.delta`` (``delta``) and
@@ -28,6 +30,7 @@ from collections.abc import AsyncIterator, Mapping
 from ..engine import Redactor
 from ..vault import Vault
 from .anthropic import _find_sse_event_terminator, _parse_sse_event, _split_unmaskable
+from .base import AttachmentRedactionUnsupported
 
 RESPONSES_PATH = "/v1/responses"
 
@@ -69,22 +72,40 @@ class OpenAIResponsesAdapter:
         if not isinstance(item, dict):
             return
         itype = item.get("type")
+        # computer_call_output carries a screenshot of the user's screen — an
+        # image we cannot redact yet. Forwarding it is exactly the "pasted
+        # image leaks" hole, so fail closed rather than send it.
+        if itype == "computer_call_output":
+            raise AttachmentRedactionUnsupported(
+                "openai_responses: request contains a computer_call_output "
+                "screenshot, which cannot be redacted yet — refusing to "
+                "forward it (fail-closed)"
+            )
         # message content (str or list of {type, text} parts)
         content = item.get("content")
         if isinstance(content, str):
             item["content"] = red.redact_text(content)
         elif isinstance(content, list):
             for part in content:
+                if not isinstance(part, dict):
+                    continue
+                # input_image / input_file parts are un-redactable binary
+                # attachments → fail closed.
+                if part.get("type") in ("input_image", "input_file"):
+                    raise AttachmentRedactionUnsupported(
+                        f"openai_responses: message contains a {part.get('type')} "
+                        "part, which cannot be redacted yet — refusing to "
+                        "forward it (fail-closed)"
+                    )
                 if (
-                    isinstance(part, dict)
-                    and isinstance(part.get("text"), str)
+                    isinstance(part.get("text"), str)
                     and part.get("type", "input_text") in _TEXT_PART_TYPES
                 ):
                     part["text"] = red.redact_text(part["text"])
         # tool-output strings (shell stdout / patches) — high secret density.
         if itype in _TOOL_OUTPUT_TYPES and isinstance(item.get("output"), str):
             item["output"] = red.redact_text(item["output"])
-        # reasoning.encrypted_content / computer_call_output screenshots: untouched.
+        # reasoning.encrypted_content: opaque server blob, forwarded untouched.
 
     async def unmask_stream(
         self, aiter_bytes: AsyncIterator[bytes], vault: Vault

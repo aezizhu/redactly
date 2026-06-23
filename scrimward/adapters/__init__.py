@@ -18,16 +18,18 @@ from __future__ import annotations
 
 from .anthropic import AnthropicAdapter
 from .base import Adapter
+from .gemini import GeminiAdapter
 from .openai_chat import OpenAIChatAdapter
 from .openai_responses import OpenAIResponsesAdapter
 
 # Ordered registry the proxy iterates to pick an adapter (first match wins).
-# Paths are disjoint (/v1/messages, /v1/chat/completions, /v1/responses), so
-# order is not load-bearing here.
+# Paths are disjoint (/v1/messages, /v1/chat/completions, /v1/responses,
+# …:generateContent), so order is not load-bearing here.
 ADAPTERS: tuple[Adapter, ...] = (
     AnthropicAdapter(),
     OpenAIChatAdapter(),
     OpenAIResponsesAdapter(),
+    GeminiAdapter(),
 )
 
 __all__ = [
@@ -35,5 +37,6 @@ __all__ = [
     "AnthropicAdapter",
     "OpenAIChatAdapter",
     "OpenAIResponsesAdapter",
+    "GeminiAdapter",
     "ADAPTERS",
 ]

@@ -23,6 +23,8 @@ import httpx
 import pytest
 
 from scrimward.adapters.anthropic import AnthropicAdapter
+from scrimward.adapters.gemini import GeminiAdapter
+from scrimward.adapters.openai_chat import OpenAIChatAdapter
 from scrimward.adapters.openai_responses import OpenAIResponsesAdapter
 from scrimward.config import Allowlist, Config
 from scrimward.detectors import detect
@@ -285,3 +287,309 @@ def test_openai_responses_unmask_delta():
     result = _run(collect())
     assert "secret@example.com" in result
     assert token not in result
+
+
+# --- Gemini adapter -------------------------------------------------------
+
+
+def test_gemini_redact_native():
+    a = GeminiAdapter()
+    red = Redactor(Vault("s"))
+    body = json.dumps(
+        {
+            "contents": [{"role": "user", "parts": [{"text": "mail alice@example.com"}]}],
+            "systemInstruction": {"parts": [{"text": "key AKIAIOSFODNN7EXAMPLE"}]},
+        }
+    ).encode()
+    out = a.redact_request(body, red)
+    assert b"alice@example.com" not in out
+    assert b"AKIAIOSFODNN7EXAMPLE" not in out
+    with pytest.raises(Exception):
+        a.redact_request(b"{ not json", red)
+
+
+def test_gemini_redact_cloud_code_assist_envelope():
+    a = GeminiAdapter()
+    red = Redactor(Vault("s"))
+    body = json.dumps(
+        {
+            "model": "gemini-2.5-pro",
+            "project": "my-gcp-project",
+            "request": {
+                "contents": [
+                    {"role": "user", "parts": [{"text": "token sk-abcdefghijklmnopqrstuvwxyz0"}]}
+                ]
+            },
+        }
+    ).encode()
+    out = a.redact_request(body, red)
+    assert b"sk-abcdefghijklmnopqrstuvwxyz0" not in out  # redacted inside request
+    assert b"my-gcp-project" in out  # outer routing IDs untouched
+    assert b"gemini-2.5-pro" in out
+
+
+def test_gemini_unmask_stream():
+    v = Vault("s")
+    token = v.token_for("priv@example.com", "EMAIL")
+
+    async def src():
+        yield (
+            'data: {"candidates":[{"content":{"parts":[{"text":%s}]}}]}\n\n' % json.dumps("here: " + token)
+        ).encode()
+
+    async def collect():
+        out = b""
+        async for c in GeminiAdapter().unmask_stream(src(), v):
+            out += c
+        return out.decode("utf-8")
+
+    result = _run(collect())
+    assert "priv@example.com" in result
+    assert token not in result
+
+
+# --- image fail-closed (no Apple Vision yet → refuse, never forward) -------
+#
+# Image redaction is not implemented. Until it is, ANY request carrying an
+# image MUST fail closed: ``redact_request`` raises and the proxy forwards
+# NOTHING. These pin the headline "an image never leaks" guarantee for every
+# adapter — closing the fail-OPEN hole where image blocks were passed through
+# untouched.
+
+
+def test_anthropic_fail_closed_on_image_block():
+    a = AnthropicAdapter()
+    red = Redactor(Vault("s"))
+    body = json.dumps(
+        {
+            "model": "x",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is in this screenshot?"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "iVBORw0KGgoAAAANS",
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+    ).encode()
+    with pytest.raises(Exception):
+        a.redact_request(body, red)
+
+
+def test_openai_chat_fail_closed_on_image_url_part():
+    a = OpenAIChatAdapter()
+    red = Redactor(Vault("s"))
+    body = json.dumps(
+        {
+            "model": "gpt-4o",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe this"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                    ],
+                }
+            ],
+        }
+    ).encode()
+    with pytest.raises(Exception):
+        a.redact_request(body, red)
+
+
+def test_openai_responses_fail_closed_on_input_image():
+    a = OpenAIResponsesAdapter()
+    red = Redactor(Vault("s"))
+    body = json.dumps(
+        {
+            "model": "gpt-5",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "read this"},
+                        {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                    ],
+                }
+            ],
+        }
+    ).encode()
+    with pytest.raises(Exception):
+        a.redact_request(body, red)
+
+
+def test_openai_responses_fail_closed_on_computer_screenshot():
+    a = OpenAIResponsesAdapter()
+    red = Redactor(Vault("s"))
+    body = json.dumps(
+        {
+            "model": "gpt-5",
+            "input": [
+                {
+                    "type": "computer_call_output",
+                    "call_id": "c1",
+                    "output": {
+                        "type": "computer_screenshot",
+                        "image_url": "data:image/png;base64,AAAA",
+                    },
+                }
+            ],
+        }
+    ).encode()
+    with pytest.raises(Exception):
+        a.redact_request(body, red)
+
+
+def test_gemini_fail_closed_on_inline_image():
+    a = GeminiAdapter()
+    red = Redactor(Vault("s"))
+    body = json.dumps(
+        {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": "what is this?"},
+                        {"inlineData": {"mimeType": "image/png", "data": "AAAA"}},
+                    ],
+                }
+            ]
+        }
+    ).encode()
+    with pytest.raises(Exception):
+        a.redact_request(body, red)
+
+
+def test_anthropic_fail_closed_on_document_block():
+    a = AnthropicAdapter()
+    red = Redactor(Vault("s"))
+    body = json.dumps(
+        {
+            "model": "x",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": "JVBERi0xLjcK",
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+    ).encode()
+    with pytest.raises(Exception):
+        a.redact_request(body, red)
+
+
+def test_openai_chat_fail_closed_on_input_audio_part():
+    a = OpenAIChatAdapter()
+    red = Redactor(Vault("s"))
+    body = json.dumps(
+        {
+            "model": "gpt-4o-audio",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "transcribe this"},
+                        {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}},
+                    ],
+                }
+            ],
+        }
+    ).encode()
+    with pytest.raises(Exception):
+        a.redact_request(body, red)
+
+
+def test_openai_responses_fail_closed_on_input_file():
+    a = OpenAIResponsesAdapter()
+    red = Redactor(Vault("s"))
+    body = json.dumps(
+        {
+            "model": "gpt-5",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "summarize"},
+                        {
+                            "type": "input_file",
+                            "filename": "secret.pdf",
+                            "file_data": "data:application/pdf;base64,JVBERi0xLjcK",
+                        },
+                    ],
+                }
+            ],
+        }
+    ).encode()
+    with pytest.raises(Exception):
+        a.redact_request(body, red)
+
+
+def test_gemini_fail_closed_on_inline_pdf():
+    a = GeminiAdapter()
+    red = Redactor(Vault("s"))
+    body = json.dumps(
+        {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": "summarize this"},
+                        {"inlineData": {"mimeType": "application/pdf", "data": "JVBERi0xLjcK"}},
+                    ],
+                }
+            ]
+        }
+    ).encode()
+    with pytest.raises(Exception):
+        a.redact_request(body, red)
+
+
+def test_proxy_fail_closed_on_image():
+    mock = _MockUpstream()
+    try:
+        app = create_app(Config(upstream=mock.url))
+        body = json.dumps(
+            {
+                "model": "x",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": "AAAA",
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        ).encode()
+        status, _ = _run(_post(app, "/v1/messages", body, {"content-type": "application/json"}))
+        assert status >= 500  # blocked, fail-closed
+        assert len(mock.received) == 0  # the image NEVER reached the upstream
+    finally:
+        mock.stop()

@@ -24,6 +24,11 @@ from .anthropic import (
     _parse_sse_event,
     _split_unmaskable,
 )
+from .base import AttachmentRedactionUnsupported
+
+# Content-part types that carry un-redactable binary attachments (image / audio
+# / file) — the engine is text-only, so any of these must fail closed.
+_BINARY_PART_TYPES = frozenset({"image_url", "input_audio", "file"})
 
 CHAT_COMPLETIONS_PATH = "/v1/chat/completions"
 
@@ -74,11 +79,17 @@ class OpenAIChatAdapter:
             return red.redact_text(content)
         if isinstance(content, list):
             for part in content:
-                if (
-                    isinstance(part, dict)
-                    and part.get("type") == "text"
-                    and isinstance(part.get("text"), str)
-                ):
+                if not isinstance(part, dict):
+                    continue
+                ptype = part.get("type")
+                # image_url / input_audio / file parts are un-redactable binary
+                # attachments → fail closed rather than forward them.
+                if ptype in _BINARY_PART_TYPES:
+                    raise AttachmentRedactionUnsupported(
+                        f"openai_chat: message contains a {ptype} part, which "
+                        "cannot be redacted yet — refusing to forward it (fail-closed)"
+                    )
+                if ptype == "text" and isinstance(part.get("text"), str):
                     part["text"] = red.redact_text(part["text"])
             return content
         # null content (assistant tool-call messages) — nothing to redact.

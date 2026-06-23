@@ -59,6 +59,16 @@ WRAP_TOOLS: dict[str, dict] = {
         "base_suffix": "/v1",
         "write_claude_settings": False,
     },
+    "gemini": {
+        # API-key mode (GOOGLE_GEMINI_BASE_URL → generativelanguage). The default
+        # "Login with Google" mode routes through Cloud Code Assist and needs
+        # CODE_ASSIST_ENDPOINT instead — see docs/integrations/gemini-cli.md.
+        "port": DEFAULT_PORT + 2,
+        "upstream": "https://generativelanguage.googleapis.com",
+        "env": "GOOGLE_GEMINI_BASE_URL",
+        "base_suffix": "",
+        "write_claude_settings": False,
+    },
 }
 
 

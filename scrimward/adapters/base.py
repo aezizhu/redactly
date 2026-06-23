@@ -24,6 +24,25 @@ from ..engine import Redactor
 from ..vault import Vault
 
 
+class AttachmentRedactionUnsupported(ValueError):
+    """Raised by an adapter when a request carries un-redactable binary content.
+
+    The redaction engine is text-only today: there is no on-device image
+    redaction (Apple Vision) and no document/audio inspection. Any such
+    attachment — a pasted screenshot, a base64 PDF, an inline audio clip —
+    forwarded untouched would leak to the provider, the fail-OPEN hole this
+    project exists to prevent. Adapters detect their provider's binary-block
+    shapes (image / document / file / audio) and raise this; the proxy catches
+    it (it subclasses ``ValueError``, which the request pipeline already treats
+    as fail-closed) and BLOCKS the request with a 5xx, forwarding NOTHING. The
+    message is surfaced so the user knows an attachment — not a bug — stopped
+    the request.
+
+    Remove a given raise site (not this class) once that attachment kind can be
+    handed to a real redactor and spliced back in.
+    """
+
+
 @runtime_checkable
 class Adapter(Protocol):
     """Structural contract every per-provider body adapter implements."""

@@ -15,16 +15,14 @@
 
 ---
 
-> ### ⚠️ Status
-> **Design and feasibility are verified; implementation is in progress.** Do **not** yet rely on
-> `scrimward` to protect real secrets. This README describes the intended behavior and the
-> architecture it is being built to. See [`docs/SUPPORTED-TOOLS.md`](docs/SUPPORTED-TOOLS.md) for
-> what's possible per tool, and [`docs/VERIFICATION.md`](docs/VERIFICATION.md) for the Claude Code
-> deep-dive — verified against the official docs, not assumed.
-
----
-
 ## The problem
+
+Scrimward started with a single realization. Reaching for Anthropic's newest models — **Fable** and
+**Mythos** — we read the retention terms, and that was the trigger for this whole project: on Claude's
+consumer plans, your prompts and coding sessions sit on Anthropic's servers for **30 days** after the
+reply lands ([Anthropic's consumer terms](https://www.anthropic.com/news/updates-to-our-consumer-terms)).
+Thirty days was already too long for one API key, a customer's email, or a screenshot of an internal
+dashboard to live on someone else's machine. That was unacceptable — so we built `scrimward`.
 
 When you use an AI coding agent, **everything flows to the cloud**: the prompts you type, the files
 it reads, the output of every command it runs, and the screenshots you paste. That's how it works —

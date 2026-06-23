@@ -22,6 +22,7 @@ from collections.abc import AsyncIterator, Mapping
 
 from ..engine import Redactor
 from ..vault import TOKEN_CLOSE, TOKEN_OPEN, Vault
+from .base import AttachmentRedactionUnsupported
 
 # Request path this adapter owns.
 MESSAGES_PATH = "/v1/messages"
@@ -196,8 +197,12 @@ class AnthropicAdapter:
         - ``{"type": "tool_result", "content": ...}`` → recurse into
           ``content`` (a str or nested text blocks; tool output frequently
           carries the very secrets we must mask).
-        - Any other block type (image, tool_use, document, …) carries no user
-          free-text to redact and is passed through untouched.
+        - ``{"type": "image"|"document", ...}`` → FAIL-CLOSED: image/document
+          redaction is not built yet, so forwarding the attachment untouched
+          would leak it. Raise ``AttachmentRedactionUnsupported`` → the proxy
+          blocks the whole request.
+        - Any other block type (tool_use, …) carries no user free-text to
+          redact and is passed through untouched.
 
         A ``text`` block whose ``text`` is not a string is a malformed body →
         fail closed (raise) rather than forward it un-redacted.
@@ -208,6 +213,11 @@ class AnthropicAdapter:
                 f"got {type(block).__name__}"
             )
         btype = block.get("type")
+        if btype in ("image", "document"):
+            raise AttachmentRedactionUnsupported(
+                f"anthropic: request contains a {btype} block, which cannot be "
+                "redacted yet — refusing to forward it (fail-closed)"
+            )
         if btype == "text":
             text = block.get("text")
             if not isinstance(text, str):
