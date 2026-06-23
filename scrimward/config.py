@@ -16,7 +16,9 @@ Environment variables (all optional; local-first defaults):
   needs the ``image`` extra). Off by default → images fail closed.
 - ``REDACT_ENTROPY``  — opt-in: enable the shapeless high-entropy catch-all that
   masks un-prefixed secrets. Off by default (it also masks git SHAs / hashes /
-  UUIDs, which is noisy in coding prompts).
+  UUIDs, which is noisy in coding prompts). Suppress confirmed false positives
+  via the rules file's ``allowlist.patterns`` (e.g. ``[0-9a-f]{40}``) or
+  ``allowlist.hashes``.
 """
 
 from __future__ import annotations

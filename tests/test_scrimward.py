@@ -249,6 +249,18 @@ def test_entropy_detector_is_opt_in():
     assert secret in out  # untouched by default
 
 
+def test_entropy_allowlist_spares_bare_sha_not_embedded():
+    # The usability linchpin: with entropy ON, a confirmed FP (a 40-hex git SHA)
+    # is suppressed via the allowlist — which fullmatches the span text BEFORE the
+    # overlap merge — yet the SAME SHA inside a wider high-entropy run is still
+    # masked (the span is the whole run, so it can't be smuggled past).
+    sha = "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3"  # 40-hex; fires the entropy gate
+    r = Redactor(Vault("s"), allowlist=Allowlist(patterns=(r"[0-9a-f]{40}",)), detect_entropy=True)
+    assert r.redact_text(f"commit {sha} landed") == f"commit {sha} landed"  # spared
+    blob = _j("Xb9KpQ2mZ7vL4nR8", "tY1wC3eF6") + sha  # 40-hex inside a 65-char run
+    assert sha not in r.redact_text(f"blob {blob} end")  # masked — allowlist can't be smuggled past
+
+
 def test_entropy_union_merge_prevents_flanking_leak():
     # A narrow high-priority match (a user rule) inside a broad high-entropy run:
     # without R1 union-merge the flanking high-entropy bytes would LEAK. R1+R2
