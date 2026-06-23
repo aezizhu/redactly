@@ -18,6 +18,7 @@ and the provider's prompt cache still hits.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -92,6 +93,7 @@ class Redactor:
             re.compile(p) for p in self.allowlist.patterns
         )
         self._allow_literals: frozenset[str] = self.allowlist.literals
+        self._allow_hashes: frozenset[str] = self.allowlist.hashes
 
     def redact_text(self, s: str) -> str:
         """Return ``s`` with every detected secret replaced by a stable token.
@@ -200,6 +202,11 @@ class Redactor:
         """Return ``True`` if ``text`` is a known-safe (allowlisted) value."""
         if text in self._allow_literals:
             return True
+        if self._allow_hashes:
+            # SHA-256 hex of the matched text — lets a reviewed FP be suppressed
+            # without storing the raw value in config (ggshield-style).
+            if hashlib.sha256(text.encode("utf-8")).hexdigest() in self._allow_hashes:
+                return True
         for pat in self._allow_patterns:
             # fullmatch: an allowlist pattern un-redacts a value only when it
             # describes the WHOLE matched secret, never a substring of it.

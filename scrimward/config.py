@@ -44,10 +44,16 @@ class UserRule:
 
 @dataclass(frozen=True)
 class Allowlist:
-    """Known-safe values that match a detector pattern but are NOT secrets."""
+    """Known-safe values that match a detector pattern but are NOT secrets.
+
+    ``hashes`` allowlists by lowercase SHA-256 hex of the matched text, so a
+    reviewed false positive can be suppressed without storing the raw value in
+    config (a privacy win over ``literals`` — borrowed from ggshield).
+    """
 
     literals: frozenset[str] = field(default_factory=frozenset)
     patterns: tuple[str, ...] = ()
+    hashes: frozenset[str] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -122,5 +128,6 @@ def load_rules(path: str | os.PathLike[str]) -> tuple[tuple[UserRule, ...], Allo
     allowlist = Allowlist(
         literals=frozenset(al.get("literals", [])),
         patterns=tuple(al.get("patterns", [])),
+        hashes=frozenset(h.lower() for h in al.get("hashes", [])),
     )
     return rules, allowlist

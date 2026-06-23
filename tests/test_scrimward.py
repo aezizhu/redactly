@@ -14,6 +14,7 @@ No real network: a tiny threaded mock upstream stands in for the provider.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import http.server
 import json
 import re
@@ -124,6 +125,41 @@ def test_engine_redacts_and_allowlist():
     assert "«EMAIL_" in out
     allow = Redactor(Vault("s2"), allowlist=Allowlist(literals=frozenset({"alice@example.com"})))
     assert allow.redact_text("mail alice@example.com") == "mail alice@example.com"
+
+
+def test_allowlist_by_sha256_hash():
+    # Allowlist a reviewed value by its hash — no raw secret stored in config.
+    val = "alice@example.com"
+    h = hashlib.sha256(val.encode("utf-8")).hexdigest()
+    r = Redactor(Vault("s"), allowlist=Allowlist(hashes=frozenset({h})))
+    assert r.redact_text(f"mail {val}") == f"mail {val}"  # hash-allowlisted → not masked
+    # a non-allowlisted email is still redacted.
+    assert "«EMAIL_" in r.redact_text("mail bob@example.com")
+
+
+def test_load_rules_parses_allowlist_hashes(tmp_path):
+    p = tmp_path / "rules.json"
+    p.write_text(json.dumps({"allowlist": {"hashes": ["deadbeef" * 8]}}))
+    _rules, allow = load_rules(p)
+    assert "deadbeef" * 8 in allow.hashes
+
+
+def test_multi_secret_canary_none_leak():
+    # A blob mixing many secret types must come out FULLY masked — a regression
+    # guard so no future detector/engine change silently starts leaking one.
+    planted = {
+        "aws_key": _j("AKIA", "IOSFODNN7EXAMPLE"),
+        "stripe": _j("sk_live_", "4eC39HqLyjWDarjtT1zdp7dc"),
+        "gh_pat": _j("github_pat_", "11ABCDE0Y0aBcDeFgHiJkL", "_",
+                     "1234567890abcdefGHIJKLMNOPqrstuvWXYZ0123456789abcdefGHIJKLM"),
+        "email": "ops@example.com",
+        "ssn": "123-45-6789",
+        "iban": "DE89370400440532013000",
+    }
+    blob = " ".join(f"{k}={v}" for k, v in planted.items())
+    out = Redactor(Vault("s")).redact_text(blob)
+    for k, v in planted.items():
+        assert v not in out, f"{k} secret leaked: {v!r}"
 
 
 # --- anthropic adapter ----------------------------------------------------
