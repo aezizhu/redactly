@@ -4,7 +4,7 @@
 
 ### Mask your secrets **before** they ever leave your machine for the cloud.
 
-*A local, fail‑closed redaction proxy for AI coding tools — [Claude Code](https://claude.com/claude-code), Codex, Aider, Cline, and more. It intercepts every request on its way out, strips the PII and secrets you care about (text **and** images), and only then lets it reach the cloud. Real values never leave your laptop.*
+*A local, fail‑closed redaction proxy for AI coding tools — [Claude Code](https://claude.com/claude-code), Codex, Aider, Cline, and more. It intercepts every request on its way out, masks the PII and secrets in your text — and **refuses any image it can't yet redact** instead of leaking it — before letting it reach the cloud. Real values never leave your laptop.*
 
 [![status](https://img.shields.io/badge/status-early%20development-orange)](#-status)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -44,8 +44,8 @@ cloud. Nothing reaches the provider until it has passed through the masker:
                                  │         scrimward proxy          │  ← only ever on your machine
                                  │   • detect secrets & PII        │
                                  │   • mask text   →  «EMAIL_1»    │
-                                 │   • blur image regions (faces,  │
-                                 │     text) via Apple Vision      │
+                                 │   • refuse images it can't yet  │
+                                 │     redact (Vision blur: soon)  │
                                  │   • FAIL-CLOSED on any doubt    │
                                  └───────────────┬─────────────────┘
                                                  │  redacted request
@@ -86,7 +86,7 @@ that stands the proxy up and **fails closed** if the route isn't active.
 - 🔒 **Local-first.** The proxy runs only on `127.0.0.1`. Your real data never leaves the machine.
 - 🔁 **Reversible.** Stable tokens out, real values restored in the reply via a local vault (mode-switchable to one-way).
 - 🧠 **Smart detectors.** Emails, API keys (AWS/GitHub/Slack/Anthropic), JWTs, credit cards (Luhn-checked), IPs, phone numbers — plus your own rules.
-- 🖼️ **Image redaction.** Blurs text regions and faces using **Apple Vision** (on-device, no extra installs).
+- 🖼️ **Images fail closed.** Pasted images (and other binary attachments — PDFs, audio) can't be redacted yet, so the proxy *refuses* them rather than leak them. On-device blurring of text regions and faces via **Apple Vision** is on the roadmap.
 - 🗣️ **Say what to hide.** Add rules in plain language via slash commands — `/redact add …`.
 - 🚧 **Fail-closed by design.** If the proxy isn't in the path, the tool refuses rather than leaking.
 
@@ -101,7 +101,8 @@ that stands the proxy up and **fails closed** if the route isn't active.
 | Adapters: Anthropic, OpenAI-Chat, OpenAI-Responses | ✅ Done |
 | **Claude Code plugin** (slash commands + fail-closed guard hook) | ✅ Done |
 | Launchers: `wrap claude` + `wrap codex` | ✅ Done (Codex: API-key mode) |
-| Image redaction (Apple Vision) | 🔨 Planned |
+| Image / binary attachments — fail-closed refusal | ✅ Done |
+| Image redaction (Apple Vision blur — redact & forward) | 🔨 Planned |
 | Gemini / Copilot adapters + launchers | 🔨 Planned |
 
 ### Supported tools
@@ -184,7 +185,7 @@ This is a guardrail against leaks, not a guarantee against a determined adversar
 
 - **The proxy and text redaction are cross-platform** — they run wherever your tool does. Cline (VS Code), Codex, Aider, Gemini CLI, Copilot, and Claude Code are all cross-platform.
 - At least one **supported tool** (see the table above) you can point at the local proxy.
-- **macOS (Apple Silicon) is required only for image redaction**, which uses the native Apple Vision framework on-device. Everything else works on any OS.
+- **macOS (Apple Silicon) will be required for image redaction (planned)**, which will use the native Apple Vision framework on-device. Until then images fail closed on any OS, and everything else works anywhere.
 
 ## Documentation
 
