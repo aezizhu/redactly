@@ -13,6 +13,12 @@ token shape is ``«PREFIX_<salt>_N»`` with a per-prefix counter ``N``.
 Persistence: in-memory by default (session-lifetime, never written). When backed
 by a file it is created ``0600`` inside a ``0700`` directory — it holds real
 secrets in cleartext and must never be group/world readable.
+
+Opt-in **encrypt mode** (``encrypt=True``) removes cleartext-at-rest entirely:
+the token IS an AES-SIV ciphertext (``«PREFIX~<hex>»``), the key lives only in
+memory, and nothing is written to disk. AES-SIV is deterministic, so the same
+secret still yields the same token (dedup + prompt-cache stability hold), and
+``unmask`` decrypts the self-contained token rather than consulting a stored map.
 """
 
 from __future__ import annotations
@@ -36,6 +42,22 @@ TOKEN_CLOSE = "»"
 # are only substituted when present in this vault's reverse map, so an imperfect
 # match never causes a false substitution.
 _TOKEN_SCAN = re.compile(r"«[A-Z0-9_]+_[0-9a-f]{6}_\d+»")
+
+# Encrypt-mode token grammar: «PREFIX~<hex ciphertext>». The uppercase prefix
+# and lowercase-hex body are split by ``~`` (which appears in neither), so the
+# token is self-contained — ``unmask`` decrypts it; no stored map is needed.
+_ENCRYPT_SCAN = re.compile(r"«([A-Z0-9_]+)~([0-9a-f]+)»")
+
+
+def _make_siv():
+    """Build an in-memory AES-SIV cipher (deterministic AEAD; key never persists).
+
+    Imported lazily so the ``cryptography`` dependency is only required when the
+    opt-in encrypt vault is actually used.
+    """
+    from cryptography.hazmat.primitives.ciphers.aead import AESSIV
+
+    return AESSIV(secrets.token_bytes(64))  # AES-256-SIV, random per-session key
 
 # A token prefix must live in this alphabet or the minted «PREFIX_salt_N» token
 # falls outside _TOKEN_SCAN and unmask can never restore it (silent leak of the
@@ -65,15 +87,19 @@ def normalize_token_prefix(prefix: str) -> str:
 class Vault:
     """A session-scoped, reversible token store."""
 
-    def __init__(self, session_id: str, path: Path | None = None) -> None:
+    def __init__(self, session_id: str, path: Path | None = None, encrypt: bool = False) -> None:
         self.session_id = session_id
         self.path = Path(path) if path is not None else None
+        self.encrypt = encrypt
         self._secret_to_token: dict[str, str] = {}
         self._token_to_secret: dict[str, str] = {}
         self._counters: dict[str, int] = {}
         # Session-constant salt (minted once) → same secret yields same token.
         self._salt: str = secrets.token_hex(3)  # 6 hex chars
-        if self.path is not None and self.path.exists():
+        # Opt-in encrypt mode: the token IS the AES-SIV ciphertext, the key is
+        # in-memory only, and NOTHING is written to disk (no cleartext-at-rest).
+        self._siv = _make_siv() if encrypt else None
+        if not encrypt and self.path is not None and self.path.exists():
             self._load()
 
     def token_for(self, secret: str, prefix: str) -> str:
@@ -89,12 +115,20 @@ class Vault:
         # span got here (built-ins are already clean; user rules are normalized
         # at config load, but a bad prefix must never mint an un-unmaskable token).
         prefix = normalize_token_prefix(prefix)
-        n = self._counters.get(prefix, 0) + 1
-        self._counters[prefix] = n
-        token = f"{TOKEN_OPEN}{prefix}_{self._salt}_{n}{TOKEN_CLOSE}"
+        if self.encrypt:
+            # Token IS the ciphertext (AES-SIV is deterministic → same secret +
+            # prefix → same token, so dedup + prompt-cache stability hold). The
+            # prefix is bound as associated data so a token can't be re-typed.
+            ciphertext = self._siv.encrypt(secret.encode("utf-8"), [prefix.encode("utf-8")])
+            token = f"{TOKEN_OPEN}{prefix}~{ciphertext.hex()}{TOKEN_CLOSE}"
+        else:
+            n = self._counters.get(prefix, 0) + 1
+            self._counters[prefix] = n
+            token = f"{TOKEN_OPEN}{prefix}_{self._salt}_{n}{TOKEN_CLOSE}"
         self._secret_to_token[secret] = token
         self._token_to_secret[token] = secret
-        self._persist()
+        if not self.encrypt:
+            self._persist()  # encrypt mode writes nothing — no cleartext-at-rest
         return token
 
     def unmask(self, text: str) -> str:
@@ -103,11 +137,26 @@ class Vault:
         Only tokens minted by this vault are substituted; unknown ``«…»`` runs
         are left untouched. The reverse of :meth:`token_for`.
         """
-        if not self._token_to_secret or TOKEN_OPEN not in text:
+        if TOKEN_OPEN not in text:
+            return text
+        if self.encrypt:
+            # Self-contained tokens: decrypt each «PREFIX~hex» (the in-memory key
+            # is the only state). A token that isn't ours / won't decrypt is left
+            # untouched, exactly like an unknown token in the map-based path.
+            return _ENCRYPT_SCAN.sub(self._decrypt_match, text)
+        if not self._token_to_secret:
             return text
         return _TOKEN_SCAN.sub(
             lambda m: self._token_to_secret.get(m.group(0), m.group(0)), text
         )
+
+    def _decrypt_match(self, m: re.Match[str]) -> str:
+        prefix, hex_ct = m.group(1), m.group(2)
+        try:
+            plaintext = self._siv.decrypt(bytes.fromhex(hex_ct), [prefix.encode("utf-8")])
+            return plaintext.decode("utf-8")
+        except Exception:
+            return m.group(0)
 
     # --- persistence ------------------------------------------------------
 

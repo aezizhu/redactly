@@ -84,7 +84,7 @@ that stands the proxy up and **fails closed** if the route isn't active.
 ## Features
 
 - 🔒 **Local-first.** The proxy runs only on `127.0.0.1`. Your real data never leaves the machine.
-- 🔁 **Reversible.** Stable tokens out, real values restored in the reply via a local vault (mode-switchable to one-way).
+- 🔁 **Reversible.** Stable tokens out, real values restored in the reply via a local vault. Opt-in **encrypt-token mode** (`REDACT_VAULT_ENCRYPT`) makes the token itself an AES-SIV ciphertext — reversible with **no cleartext at rest**.
 - 🧠 **Smart detectors (~40 built-ins).** Cloud + SaaS keys/tokens (AWS, GCP, Azure, GitHub incl. fine-grained PATs, GitLab, Stripe, Slack, Twilio, SendGrid, npm/PyPI/HuggingFace, DigitalOcean, Shopify, Linear, Notion …), private keys, JWTs, OAuth tokens, DB/connection strings — plus PII (emails, phones, Luhn-checked cards, mod-97 IBAN, US SSN, IPs, MACs). Unicode-evasion-resistant (NFKC + zero-width stripping). Plus your own rules.
 - 🖼️ **Image redaction (opt-in, macOS).** By default images fail closed (refused). Set `REDACT_IMAGES=1` on macOS to redact them on-device with **Apple Vision**: every text region + face is covered with a **solid opaque box** (never blur — that's reversible), then a second-pass OCR re-verify *refuses* if any readable text survives. Strict fill-all (Claude adapter today; PDFs/audio still fail closed).
 - 🗣️ **Say what to hide.** Add rules in plain language via slash commands — `/redact add …`.

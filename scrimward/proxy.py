@@ -201,7 +201,7 @@ def create_app(
         # in-memory unless ``config.vault_path`` is set. A redactor is built
         # over it with the configured user rules + allowlist.
         session_id = uuid.uuid4().hex
-        vault = Vault(session_id, path=cfg.vault_path)
+        vault = Vault(session_id, path=cfg.vault_path, encrypt=cfg.vault_encrypt)
         redactor = Redactor(
             vault,
             user_rules=cfg.user_rules,

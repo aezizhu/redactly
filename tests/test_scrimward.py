@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import http.server
+import importlib.util
 import io
 import json
 import re
@@ -34,6 +35,8 @@ from scrimward.image_redactor import image_redaction_available
 from scrimward.engine import Redactor
 from scrimward.proxy import create_app
 from scrimward.vault import Vault
+
+_HAS_CRYPTO = importlib.util.find_spec("cryptography") is not None
 
 # UTF-8 bytes for the guillemets that delimit a token («…»).
 _TOKEN_BYTES_RE = re.compile(rb"\xc2\xab.*?\xc2\xbb", re.DOTALL)
@@ -116,6 +119,46 @@ def test_vault_roundtrip_and_stability():
     assert v.token_for("c@d.com", "EMAIL") != t1
     assert v.unmask(f"write to {t1} please") == "write to a@b.com please"
     assert v.unmask("nothing to see") == "nothing to see"
+
+
+# --- encrypt-token vault (opt-in): token IS the ciphertext, no cleartext-at-rest
+
+
+@pytest.mark.skipif(not _HAS_CRYPTO, reason="cryptography not installed")
+def test_vault_encrypt_roundtrip_and_determinism():
+    v = Vault("s", encrypt=True)
+    t1 = v.token_for("a@b.com", "EMAIL")
+    t2 = v.token_for("a@b.com", "EMAIL")
+    assert t1 == t2  # AES-SIV is deterministic → same secret → same token
+    assert v.token_for("c@d.com", "EMAIL") != t1
+    assert t1.startswith("«EMAIL~") and t1.endswith("»")
+    assert "a@b.com" not in t1  # the secret is encrypted, not embedded
+    assert v.unmask(f"write to {t1} please") == "write to a@b.com please"
+
+
+@pytest.mark.skipif(not _HAS_CRYPTO, reason="cryptography not installed")
+def test_vault_encrypt_writes_no_cleartext_at_rest(tmp_path):
+    p = tmp_path / "vault.json"
+    v = Vault("s", path=p, encrypt=True)
+    v.token_for("topsecret@example.com", "EMAIL")
+    # encrypt mode persists NOTHING — key is in-memory, the token self-decrypts.
+    assert not p.exists()
+
+
+@pytest.mark.skipif(not _HAS_CRYPTO, reason="cryptography not installed")
+def test_vault_encrypt_unmask_leaves_foreign_tokens():
+    v = Vault("s", encrypt=True)
+    # a standard-shaped token (not an encrypt token) and prose are left untouched.
+    assert v.unmask("see «NOPE_a1b2c3_1» and plain text") == "see «NOPE_a1b2c3_1» and plain text"
+
+
+@pytest.mark.skipif(not _HAS_CRYPTO, reason="cryptography not installed")
+def test_redactor_with_encrypt_vault_roundtrip():
+    v = Vault("s", encrypt=True)
+    masked = Redactor(v).redact_text("mail alice@example.com now")
+    assert "alice@example.com" not in masked
+    assert "«EMAIL~" in masked
+    assert v.unmask(masked) == "mail alice@example.com now"
 
 
 # --- engine ---------------------------------------------------------------
@@ -244,6 +287,27 @@ def test_proxy_canary_e2e():
         assert mock.received[0]["headers"].get("x-api-key") == "sk-test-key"
         # And the reply was un-masked locally back to the real value.
         assert canary in resp_text
+    finally:
+        mock.stop()
+
+
+@pytest.mark.skipif(not _HAS_CRYPTO, reason="cryptography not installed")
+def test_proxy_canary_e2e_encrypt_vault():
+    mock = _MockUpstream()
+    try:
+        app = create_app(Config(upstream=mock.url, vault_encrypt=True))
+        canary = "alice.secret@example.com"
+        body = json.dumps(
+            {"model": "x", "messages": [{"role": "user", "content": f"email me at {canary}"}]}
+        ).encode()
+        status, resp_text = _run(
+            _post(app, "/v1/messages", body, {"content-type": "application/json", "x-api-key": "k"})
+        )
+        assert status == 200
+        recv_body = mock.received[0]["body"]
+        assert canary.encode() not in recv_body  # secret absent from the wire
+        assert b"~" in recv_body  # an encrypt token «PREFIX~hex» went upstream
+        assert canary in resp_text  # decrypted locally back to the real value
     finally:
         mock.stop()
 

@@ -10,6 +10,10 @@ Environment variables (all optional; local-first defaults):
 - ``REDACT_PORT``     — bind port. Default ``8788``.
 - ``REDACT_RULES``    — path to the user rules + allowlist JSON (gitignored).
 - ``REDACT_VAULT``    — on-disk vault path. Default in-memory only (None).
+- ``REDACT_VAULT_ENCRYPT`` — opt-in: the token IS AES-SIV ciphertext, so the
+  vault keeps NO cleartext at rest (needs the ``vault-encrypt`` extra). Off by default.
+- ``REDACT_IMAGES``   — opt-in on-device image redaction via Apple Vision (macOS;
+  needs the ``image`` extra). Off by default → images fail closed.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ ENV_HOST = "REDACT_HOST"
 ENV_PORT = "REDACT_PORT"
 ENV_RULES = "REDACT_RULES"
 ENV_VAULT = "REDACT_VAULT"
+ENV_VAULT_ENCRYPT = "REDACT_VAULT_ENCRYPT"
 ENV_IMAGES = "REDACT_IMAGES"
 
 # Truthy values that enable on-device image redaction (macOS + Apple Vision).
@@ -69,6 +74,7 @@ class Config:
     port: int = DEFAULT_PORT
     rules_path: Path = field(default_factory=lambda: Path(DEFAULT_RULES_PATH))
     vault_path: Path | None = None
+    vault_encrypt: bool = False
     user_rules: tuple[UserRule, ...] = ()
     allowlist: Allowlist = field(default_factory=Allowlist)
     redact_images: bool = False
@@ -89,6 +95,7 @@ def load(*, rules_path: str | os.PathLike[str] | None = None) -> Config:
 
     vault_env = os.environ.get(ENV_VAULT)
     vault_path = Path(vault_env) if vault_env else None
+    vault_encrypt = os.environ.get(ENV_VAULT_ENCRYPT, "").strip().lower() in _TRUTHY
 
     redact_images = os.environ.get(ENV_IMAGES, "").strip().lower() in _TRUTHY
 
@@ -103,6 +110,7 @@ def load(*, rules_path: str | os.PathLike[str] | None = None) -> Config:
         port=port,
         rules_path=rules_path_p,
         vault_path=vault_path,
+        vault_encrypt=vault_encrypt,
         user_rules=user_rules,
         allowlist=allowlist,
         redact_images=redact_images,

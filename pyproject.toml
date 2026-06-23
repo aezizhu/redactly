@@ -34,6 +34,9 @@ image = [
     "pyobjc-framework-Vision>=10.0; sys_platform == 'darwin'",
     "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
 ]
+# Opt-in encrypt-token vault (AES-SIV) — token IS the ciphertext, no cleartext
+# at rest. Only needed when REDACT_VAULT_ENCRYPT is enabled.
+vault-encrypt = ["cryptography>=42"]
 
 [project.scripts]
 # Entry point: `scrimward` → the click group exposed as scrimward.cli:main.
