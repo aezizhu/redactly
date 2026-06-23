@@ -660,6 +660,17 @@ def _j(*parts: str) -> str:
 
 
 _DETECTOR_CASES: dict[str, tuple[list[str], list[str]]] = {
+    # broadened AWS access-key prefixes (gitleaks: A3T*/ABIA/ACCA beyond AKIA/ASIA)
+    "aws_access_key": (
+        [_j("ABIA", "IOSFODNN7EXAMPLE"), _j("A3TA", "IOSFODNN7EXAMPLE")],
+        ["AKIASHORT", "ABIAlowercase123"],
+    ),
+    # re-enabled (was disabled): keyword-anchored so a bare 40-char base64 (which
+    # over-fired) is NOT caught, but a real AWS_SECRET_ACCESS_KEY assignment is.
+    "aws_secret_key": (
+        [_j("aws_secret_access_key=", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")],
+        ["abcdefghij0123456789ABCDEFGHIJ0123456789ab"],  # bare 40-char, no keyword
+    ),
     "github_fine_grained_pat": (
         # real format: github_pat_ + 22 alnum + _ + 59 alnum
         [_j("github_pat_", "11ABCDE0Y0aBcDeFgHiJkL", "_", "1234567890abcdefGHIJKLMNOPqrstuvWXYZ0123456789abcdefGHIJKLM")],

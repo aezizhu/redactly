@@ -45,7 +45,7 @@ cloud. Nothing reaches the provider until it has passed through the masker:
                                  │   • detect secrets & PII        │
                                  │   • mask text   →  «EMAIL_1»    │
                                  │   • refuse images it can't yet  │
-                                 │     redact (Vision blur: soon)  │
+                                 │     redact (Vision fill: soon)  │
                                  │   • FAIL-CLOSED on any doubt    │
                                  └───────────────┬─────────────────┘
                                                  │  redacted request
@@ -86,7 +86,7 @@ that stands the proxy up and **fails closed** if the route isn't active.
 - 🔒 **Local-first.** The proxy runs only on `127.0.0.1`. Your real data never leaves the machine.
 - 🔁 **Reversible.** Stable tokens out, real values restored in the reply via a local vault (mode-switchable to one-way).
 - 🧠 **Smart detectors (~40 built-ins).** Cloud + SaaS keys/tokens (AWS, GCP, Azure, GitHub incl. fine-grained PATs, GitLab, Stripe, Slack, Twilio, SendGrid, npm/PyPI/HuggingFace, DigitalOcean, Shopify, Linear, Notion …), private keys, JWTs, OAuth tokens, DB/connection strings — plus PII (emails, phones, Luhn-checked cards, mod-97 IBAN, US SSN, IPs, MACs). Unicode-evasion-resistant (NFKC + zero-width stripping). Plus your own rules.
-- 🖼️ **Images fail closed.** Pasted images (and other binary attachments — PDFs, audio) can't be redacted yet, so the proxy *refuses* them rather than leak them. On-device blurring of text regions and faces via **Apple Vision** is on the roadmap.
+- 🖼️ **Images fail closed.** Pasted images (and other binary attachments — PDFs, audio) can't be redacted yet, so the proxy *refuses* them rather than leak them. On the roadmap: on-device **Apple Vision** redaction (OCR → detect → **solid opaque boxes**, then a second-pass re-verify) — never blur/pixelate, which is reversible.
 - 🗣️ **Say what to hide.** Add rules in plain language via slash commands — `/redact add …`.
 - 🚧 **Fail-closed by design.** If the proxy isn't in the path, the tool refuses rather than leaking.
 
@@ -102,7 +102,7 @@ that stands the proxy up and **fails closed** if the route isn't active.
 | **Claude Code plugin** (slash commands + fail-closed guard hook) | ✅ Done |
 | Launchers: `wrap claude` + `wrap codex` | ✅ Done (Codex: API-key mode) |
 | Image / binary attachments — fail-closed refusal | ✅ Done |
-| Image redaction (Apple Vision blur — redact & forward) | 🔨 Planned |
+| Image redaction (Apple Vision: OCR → opaque-fill → re-verify) | 🔨 Planned |
 | Gemini / Copilot adapters + launchers | 🔨 Planned |
 
 ### Supported tools

@@ -100,8 +100,15 @@ def _iban_ok(value: str) -> bool:
 # skips empty patterns.
 BUILTINS: tuple[Detector, ...] = (
     # --- high-confidence vendor prefixes (most-specific first) ---
-    Detector("aws_access_key", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", "AWS_KEY"),
-    Detector("aws_secret_key", "", "AWS_SECRET"),  # disabled: bare 40-char b64 over-fires
+    Detector("aws_access_key", r"\b(?:AKIA|ASIA|ABIA|ACCA|A3T[0-9A-Z])[0-9A-Z]{16}\b", "AWS_KEY"),
+    # Re-enabled keyword-anchored (gitleaks/detect-secrets pattern): a BARE
+    # 40-char base64 over-fires, but an AWS_SECRET_ACCESS_KEY assignment is
+    # unambiguous. The keyword is the FP guard; the whole "key=value" is masked.
+    Detector(
+        "aws_secret_key",
+        r"(?i:aws_secret_access_key|aws_secret_key)[\"'\s]*[=:]\s*[\"']?[A-Za-z0-9/+]{40}",
+        "AWS_SECRET",
+    ),
     Detector("github_token", r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b", "GH_TOKEN"),
     Detector("github_fine_grained_pat", r"\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}\b", "GH_PAT"),
     Detector("gitlab_pat", r"\bglpat-[A-Za-z0-9_-]{20,}\b", "GITLAB_PAT"),
