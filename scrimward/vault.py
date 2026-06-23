@@ -37,6 +37,30 @@ TOKEN_CLOSE = "»"
 # match never causes a false substitution.
 _TOKEN_SCAN = re.compile(r"«[A-Z0-9_]+_[0-9a-f]{6}_\d+»")
 
+# A token prefix must live in this alphabet or the minted «PREFIX_salt_N» token
+# falls outside _TOKEN_SCAN and unmask can never restore it (silent leak of the
+# reverse-mapping, i.e. the secret stays masked forever in the reply).
+_PREFIX_OK = re.compile(r"[A-Z0-9_]+")
+
+
+def normalize_token_prefix(prefix: str) -> str:
+    """Coerce a token prefix into the reversible ``[A-Z0-9_]+`` alphabet.
+
+    Upper-cases and maps ``-`` → ``_`` (common in user-chosen names like
+    ``my-key``); raises ``ValueError`` on anything that still falls outside the
+    alphabet (spaces, punctuation, empty), because such a prefix would mint a
+    token ``unmask`` can never match. Idempotent, so it is safe to apply both at
+    config load and at mint time.
+    """
+    candidate = prefix.upper().replace("-", "_")
+    if not _PREFIX_OK.fullmatch(candidate):
+        raise ValueError(
+            f"token_prefix {prefix!r} is invalid: after upper-casing and "
+            "'-'→'_' it must match [A-Z0-9_]+ so the «PREFIX_salt_N» token "
+            "stays reversible"
+        )
+    return candidate
+
 
 class Vault:
     """A session-scoped, reversible token store."""
@@ -61,6 +85,10 @@ class Vault:
         existing = self._secret_to_token.get(secret)
         if existing is not None:
             return existing
+        # Belt-and-braces: guarantee the prefix is reversible no matter how the
+        # span got here (built-ins are already clean; user rules are normalized
+        # at config load, but a bad prefix must never mint an un-unmaskable token).
+        prefix = normalize_token_prefix(prefix)
         n = self._counters.get(prefix, 0) + 1
         self._counters[prefix] = n
         token = f"{TOKEN_OPEN}{prefix}_{self._salt}_{n}{TOKEN_CLOSE}"

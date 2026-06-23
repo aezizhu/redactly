@@ -26,8 +26,8 @@ from scrimward.adapters.anthropic import AnthropicAdapter
 from scrimward.adapters.gemini import GeminiAdapter
 from scrimward.adapters.openai_chat import OpenAIChatAdapter
 from scrimward.adapters.openai_responses import OpenAIResponsesAdapter
-from scrimward.config import Allowlist, Config
-from scrimward.detectors import detect
+from scrimward.config import Allowlist, Config, load_rules
+from scrimward.detectors import BUILTINS, detect
 from scrimward.engine import Redactor
 from scrimward.proxy import create_app
 from scrimward.vault import Vault
@@ -593,3 +593,159 @@ def test_proxy_fail_closed_on_image():
         assert len(mock.received) == 0  # the image NEVER reached the upstream
     finally:
         mock.stop()
+
+
+# --- R3: unicode-evasion normalization ------------------------------------
+#
+# A zero-width / format char spliced into a secret, or a full-width homoglyph,
+# bypasses every regex detector. redact_text must NFKC-normalize + strip Cf
+# chars before detecting (and forward the normalized text).
+
+
+def test_zero_width_char_evasion_is_redacted():
+    out = Redactor(Vault("s")).redact_text("key AKIA​IOSFODNN7EXAMPLE done")
+    assert "AKIA" not in out  # the key (zero-width stripped) was detected + masked
+    assert "​" not in out  # the zero-width char is gone from the forwarded text
+    assert "«AWS_KEY_" in out
+
+
+def test_fullwidth_homoglyph_evasion_is_redacted():
+    # Full-width latin letters fold to ASCII under NFKC, so the email is caught.
+    out = Redactor(Vault("s")).redact_text("ping ｍｅ@example.com now")
+    assert "@example.com" not in out
+    assert "«EMAIL_" in out
+
+
+# --- R5: token-prefix validation (reversibility) --------------------------
+#
+# A token_prefix outside [A-Z0-9_]+ mints a token that the «PREFIX_salt_N» scan
+# can't match, so unmask never restores it — a silent reversibility bug.
+
+
+def test_token_prefix_lowercase_hyphen_is_normalized_and_reversible():
+    v = Vault("s")
+    tok = v.token_for("s3cretvalue", "my-key")  # lowercase + hyphen
+    assert v.unmask(f"see {tok} now") == "see s3cretvalue now"
+
+
+def test_token_prefix_invalid_raises():
+    v = Vault("s")
+    with pytest.raises(ValueError):
+        v.token_for("x", "bad prefix!")  # space + '!' cannot be normalized
+
+
+def test_load_rules_normalizes_token_prefix(tmp_path):
+    p = tmp_path / "rules.json"
+    p.write_text(json.dumps({"rules": [{"name": "r", "pattern": "foo", "token_prefix": "my-key"}]}))
+    rules, _allow = load_rules(p)
+    assert rules[0].token_prefix == "MY_KEY"
+
+
+# --- expanded detector coverage (26 new detectors) ------------------------
+#
+# Each detector is exercised in isolation: every positive MUST match, every
+# look-alike negative MUST NOT (false-positive guard). Vectors are the ones the
+# design workflow compiled + asserted.
+
+def _j(*parts: str) -> str:
+    """Reassemble a secret-shaped test fixture from separate literal parts.
+
+    Splitting the vendor prefix from the body keeps the full secret pattern from
+    ever appearing CONTIGUOUSLY in this source file, so GitHub push-protection /
+    secret scanners don't flag scrimward's OWN detector fixtures (fitting, for a
+    redaction tool). The test still sees the reassembled string, so coverage is
+    unchanged.
+    """
+    return "".join(parts)
+
+
+_DETECTOR_CASES: dict[str, tuple[list[str], list[str]]] = {
+    "github_fine_grained_pat": (
+        # real format: github_pat_ + 22 alnum + _ + 59 alnum
+        [_j("github_pat_", "11ABCDE0Y0aBcDeFgHiJkL", "_", "1234567890abcdefGHIJKLMNOPqrstuvWXYZ0123456789abcdefGHIJKLM")],
+        ["github_patterns_are_cool", "github_pat_short_token"],
+    ),
+    "gitlab_pat": ([_j("glpat-", "ABCDEFGhijkl1234567890")], ["glpat-short"]),
+    "npm_token": ([_j("npm_", "abcdefghij0123456789ABCDEFGHIJ012345")], ["npm_install"]),
+    "pypi_token": (
+        [_j("pypi-", "AgEIcHlwaS5vcmc", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")],
+        ["pypi-something"],
+    ),
+    "huggingface_token": ([_j("hf_", "abcdefghijklmnopqrstuvwxyzABCDEFGH")], ["hf_short"]),
+    "digitalocean_token": (
+        [_j("dop_v1_", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")],
+        ["dop_v1_short"],
+    ),
+    "stripe_secret_key": (
+        [_j("sk_live_", "4eC39HqLyjWDarjtT1zdp7dc")],
+        [_j("sk_test_", "4eC39HqLyjWDarjtT1zdp7dc")],
+    ),
+    "sendgrid_key": (
+        [_j("SG.", "aaaaaaaaaaaaaaaaaaaaaa", ".bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")],
+        ["SG.short.token"],
+    ),
+    "twilio_account_sid": ([_j("AC", "0123456789abcdef0123456789abcdef")], ["ACCOUNT_NAME_HERE"]),
+    "twilio_api_key_sid": ([_j("SK", "0123456789abcdef0123456789abcdef")], ["SKIP_THIS_LINE_NOW"]),
+    "google_oauth_access_token": ([_j("ya29.", "a0AfH6SMBabcdefghijklmnop")], ["ya30.notatoken1234567890"]),
+    "slack_app_token": (
+        [_j("xapp-", "1-A01B2C3D4E5-1234567890123-abcdef0123456789abcdef0123456789")],
+        ["xapp-nope"],
+    ),
+    "slack_webhook_url": (
+        [_j("https://hooks.slack.com/services/", "T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX")],
+        ["https://example.com/services/T/B/x"],
+    ),
+    "shopify_access_token": (
+        [_j("shpat_", "0123456789abcdef0123456789abcdef"), _j("shpca_", "ABCDEF0123456789ABCDEF0123456789")],
+        ["shpat_short"],
+    ),
+    "linear_api_key": (
+        [_j("lin_api_", "a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5")],
+        ["lin_apikey_missing_underscore"],
+    ),
+    "notion_token": (
+        [
+            _j("secret_", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            _j("ntn_", "0123456789ABCDEFGHIJ0123456789ABCDEFGHIJ123"),
+        ],
+        ["secret_short"],
+    ),
+    "mailgun_key": ([_j("key-", "0123456789abcdef0123456789abcdef")], ["key-short"]),
+    "square_access_token": (
+        [_j("sq0atp-", "abcDEF0123456789_-xyzQ"), _j("EAAA", "Ed8sB0123456789abcdefghijklmno")],
+        ["EAAAshort"],
+    ),
+    "cloudflare_api_token": (
+        [_j("cloudflare_api_token=", "vAbCdEfGhIj0123456789_-KLMnoPQRstUVwxyz0")],
+        ["cloudflare config docs"],
+    ),
+    "azure_storage_key": (
+        [_j("AccountKey=", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==")],
+        ["AccountName=devstoreaccount1"],
+    ),
+    "azure_sas_signature": (
+        [_j("?sig=", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa%3D")],
+        ["?signal=on"],
+    ),
+    "aws_account_in_arn": ([_j("arn:aws:iam::", "123456789012:user/dev")], ["arn:aws:s3:::my-bucket"]),
+    "us_ssn": (["123-45-6789"], ["000-12-3456"]),
+    "iban": (["DE89370400440532013000", "GB29NWBK60161331926819"], ["HELLO12345678901234"]),
+    "mac_address": (["00:1A:2B:3C:4D:5E"], ["00:1A:2B:3C:4D"]),
+    "generic_assigned_secret": ([_j("password=", "hunter2hunter2hunter2")], ["token: short"]),
+}
+
+
+def test_new_detectors_registered():
+    by_name = {d.name for d in BUILTINS}
+    missing = [name for name in _DETECTOR_CASES if name not in by_name]
+    assert not missing, f"detectors not registered: {missing}"
+
+
+def test_new_detectors_positive_and_negative():
+    by_name = {d.name: d for d in BUILTINS}
+    for name, (positives, negatives) in _DETECTOR_CASES.items():
+        det = by_name[name]
+        for pos in positives:
+            assert detect(pos, (det,)), f"{name} should match {pos!r}"
+        for neg in negatives:
+            assert not detect(neg, (det,)), f"{name} should NOT match {neg!r}"

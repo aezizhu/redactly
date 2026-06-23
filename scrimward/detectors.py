@@ -76,19 +76,60 @@ def _jwt_ok(value: str) -> bool:
     return True
 
 
+def _iban_ok(value: str) -> bool:
+    """ISO 13616 mod-97 check — what turns a loose IBAN regex into a precise one."""
+    v = value.replace(" ", "").upper()
+    if not 15 <= len(v) <= 34:
+        return False
+    rearranged = v[4:] + v[:4]  # move country+check digits to the end
+    digits = []
+    for c in rearranged:
+        if c.isdigit():
+            digits.append(c)
+        elif "A" <= c <= "Z":
+            digits.append(str(ord(c) - 55))  # A->10 .. Z->35
+        else:
+            return False
+    return int("".join(digits)) % 97 == 1
+
+
 # --- the registry (MOST-SPECIFIC-FIRST) -----------------------------------
 #
 # An empty ``pattern`` means the detector is intentionally disabled (too
 # false-positive-prone without context, e.g. a bare 40-char AWS secret). detect()
 # skips empty patterns.
 BUILTINS: tuple[Detector, ...] = (
+    # --- high-confidence vendor prefixes (most-specific first) ---
     Detector("aws_access_key", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", "AWS_KEY"),
     Detector("aws_secret_key", "", "AWS_SECRET"),  # disabled: bare 40-char b64 over-fires
     Detector("github_token", r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b", "GH_TOKEN"),
+    Detector("github_fine_grained_pat", r"\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}\b", "GH_PAT"),
+    Detector("gitlab_pat", r"\bglpat-[A-Za-z0-9_-]{20,}\b", "GITLAB_PAT"),
     Detector("anthropic_key", r"\bsk-ant-[A-Za-z0-9_-]{16,}\b", "ANTHROPIC_KEY"),
     Detector("openai_key", r"\bsk-(?!ant-)[A-Za-z0-9_-]{20,}\b", "OPENAI_KEY"),
+    Detector("stripe_secret_key", r"\b[rs]k_live_[A-Za-z0-9]{24,}\b", "STRIPE_KEY"),
     Detector("slack_token", r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b", "SLACK_TOKEN"),
+    Detector("slack_app_token", r"\bxapp-[0-9]-[A-Za-z0-9]+-[0-9]+-[A-Za-z0-9]+\b", "SLACK_APP"),
+    Detector(
+        "slack_webhook_url",
+        r"\bhttps://hooks\.slack\.com/services/T[A-Za-z0-9]+/B[A-Za-z0-9]+/[A-Za-z0-9]{24}\b",
+        "SLACK_WEBHOOK",
+    ),
     Detector("google_api_key", r"\bAIza[0-9A-Za-z_-]{35}\b", "GOOGLE_KEY"),
+    Detector("google_oauth_access_token", r"\bya29\.[A-Za-z0-9_-]{20,}\b", "GOOGLE_OAUTH"),
+    Detector("npm_token", r"\bnpm_[A-Za-z0-9]{36}\b", "NPM_TOKEN"),
+    Detector("pypi_token", r"\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}\b", "PYPI_TOKEN"),
+    Detector("huggingface_token", r"\bhf_[A-Za-z0-9]{34}\b", "HF_TOKEN"),
+    Detector("digitalocean_token", r"\bdo[oprt]_v1_[a-f0-9]{64}\b", "DO_TOKEN"),
+    Detector("sendgrid_key", r"\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b", "SENDGRID_KEY"),
+    Detector("shopify_access_token", r"\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}\b", "SHOPIFY_TOKEN"),
+    Detector("linear_api_key", r"\blin_api_[A-Za-z0-9]{40}\b", "LINEAR_KEY"),
+    Detector("twilio_account_sid", r"\bAC[a-f0-9]{32}\b", "TWILIO_SID"),
+    Detector("twilio_api_key_sid", r"\bSK[a-f0-9]{32}\b", "TWILIO_KEY"),
+    Detector("square_access_token", r"\b(?:sq0atp-|EAAA)[A-Za-z0-9_-]{22,}\b", "SQUARE_TOKEN"),
+    Detector("mailgun_key", r"\bkey-[a-f0-9]{32}\b", "MAILGUN_KEY"),
+    Detector("notion_token", r"\b(?:secret_|ntn_)[A-Za-z0-9]{43,50}\b", "NOTION_TOKEN"),
+    # --- structural secrets ---
     Detector(
         "private_key",
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
@@ -97,10 +138,30 @@ BUILTINS: tuple[Detector, ...] = (
     Detector("jwt", r"\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "JWT", _jwt_ok),
     Detector("bearer_token", r"\bBearer\s+[A-Za-z0-9._\-]{20,}", "BEARER"),
     Detector("connection_string", r"\b[a-z][a-z0-9+.\-]*://[^\s:@/]+:[^\s:@/]+@[^\s/]+", "CONN_STR"),
+    # --- keyword-anchored (the keyword is the FP guard; whole span masked) ---
+    Detector(
+        "cloudflare_api_token",
+        r"(?i:(?:cloudflare|cf)[ _-]?(?:api[ _-]?)?token)[\"'=:\s]+[A-Za-z0-9_-]{40}\b",
+        "CF_TOKEN",
+    ),
+    Detector("azure_storage_key", r"(?i:AccountKey)=[A-Za-z0-9+/]{86}==", "AZURE_KEY"),
+    Detector("azure_sas_signature", r"[?&]sig=[A-Za-z0-9%]{43,}(?:%3D|=)", "AZURE_SAS"),
+    Detector("aws_account_in_arn", r"\barn:aws[a-z-]*:[a-z0-9-]*:[a-z0-9-]*:\d{12}:", "AWS_ARN"),
+    # --- PII ---
     Detector("credit_card", r"\b\d(?:[ -]?\d){12,18}\b", "CC", _luhn_ok),
+    Detector("us_ssn", r"\b(?!000|666|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b", "SSN"),
+    Detector("iban", r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b", "IBAN", _iban_ok),
     Detector("email", r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "EMAIL"),
     Detector("phone", r"\+\d[\d\s().\-]{7,}\d", "PHONE"),
+    Detector("mac_address", r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b", "MAC"),
     Detector("ip_address", r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "IP", _ipv4_ok),
+    # --- generic keyword-anchored catch-all — MUST be last (lowest priority) ---
+    Detector(
+        "generic_assigned_secret",
+        r"(?i:password|passwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret)"
+        r"[\"'\s]*[=:]\s*[\"']?[A-Za-z0-9+/_\-]{12,}[\"']?",
+        "GENERIC_SECRET",
+    ),
 )
 
 

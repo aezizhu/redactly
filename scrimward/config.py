@@ -19,6 +19,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .vault import normalize_token_prefix
+
 DEFAULT_UPSTREAM = "https://api.anthropic.com"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8788
@@ -110,7 +112,9 @@ def load_rules(path: str | os.PathLike[str]) -> tuple[tuple[UserRule, ...], Allo
         UserRule(
             name=str(r["name"]),
             pattern=str(r["pattern"]),
-            token_prefix=str(r.get("token_prefix", "CUSTOM")),
+            # Normalize at the boundary so a bad prefix in the rules file fails
+            # closed at load (not at first request) and stays reversible.
+            token_prefix=normalize_token_prefix(str(r.get("token_prefix", "CUSTOM"))),
         )
         for r in data.get("rules", [])
     )

@@ -19,6 +19,7 @@ and the provider's prompt cache still hits.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
 from .config import Allowlist, Config, UserRule
@@ -112,6 +113,13 @@ class Redactor:
         if not s:
             return s
 
+        # Defeat unicode evasion BEFORE detecting (and forward the normalized
+        # text): NFKC folds full-width / compatibility homoglyphs back to ASCII,
+        # and stripping format (Cf) chars removes zero-width spaces / BOM / soft
+        # hyphens an attacker can splice into a secret to dodge every regex
+        # (e.g. "AKIA​...."). The model never needs these characters.
+        s = self._normalize(s)
+
         ranked = self._gather(s)
         if not ranked:
             return s
@@ -125,6 +133,22 @@ class Redactor:
             return s
 
         return self._splice(s, spans)
+
+    @staticmethod
+    def _normalize(s: str) -> str:
+        """NFKC-fold then strip Unicode format (Cf) chars, to defeat evasion.
+
+        NFKC collapses full-width / compatibility homoglyphs to their canonical
+        ASCII form; the Cf strip removes zero-width spaces, BOM, soft hyphens and
+        other invisible format characters NFKC leaves in place. Both run before
+        detection so a secret obfuscated with either trick is still matched, and
+        the normalized string is what gets forwarded (the model never relies on
+        these characters). The common case (no Cf chars) skips the rebuild.
+        """
+        s = unicodedata.normalize("NFKC", s)
+        if any(unicodedata.category(c) == "Cf" for c in s):
+            s = "".join(c for c in s if unicodedata.category(c) != "Cf")
+        return s
 
     # ------------------------------------------------------------------
     # Gather

@@ -85,7 +85,7 @@ that stands the proxy up and **fails closed** if the route isn't active.
 
 - 🔒 **Local-first.** The proxy runs only on `127.0.0.1`. Your real data never leaves the machine.
 - 🔁 **Reversible.** Stable tokens out, real values restored in the reply via a local vault (mode-switchable to one-way).
-- 🧠 **Smart detectors.** Emails, API keys (AWS/GitHub/Slack/Anthropic), JWTs, credit cards (Luhn-checked), IPs, phone numbers — plus your own rules.
+- 🧠 **Smart detectors (~40 built-ins).** Cloud + SaaS keys/tokens (AWS, GCP, Azure, GitHub incl. fine-grained PATs, GitLab, Stripe, Slack, Twilio, SendGrid, npm/PyPI/HuggingFace, DigitalOcean, Shopify, Linear, Notion …), private keys, JWTs, OAuth tokens, DB/connection strings — plus PII (emails, phones, Luhn-checked cards, mod-97 IBAN, US SSN, IPs, MACs). Unicode-evasion-resistant (NFKC + zero-width stripping). Plus your own rules.
 - 🖼️ **Images fail closed.** Pasted images (and other binary attachments — PDFs, audio) can't be redacted yet, so the proxy *refuses* them rather than leak them. On-device blurring of text regions and faces via **Apple Vision** is on the roadmap.
 - 🗣️ **Say what to hide.** Add rules in plain language via slash commands — `/redact add …`.
 - 🚧 **Fail-closed by design.** If the proxy isn't in the path, the tool refuses rather than leaking.
