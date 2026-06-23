@@ -27,6 +27,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# On-device image redaction (Apple Vision) — macOS / Apple Silicon only. Without
+# this extra, images fail closed (are refused) on every platform.
+image = [
+    "pillow>=10.3; sys_platform == 'darwin'",
+    "pyobjc-framework-Vision>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
+]
 
 [project.scripts]
 # Entry point: `scrimward` → the click group exposed as scrimward.cli:main.

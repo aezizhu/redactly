@@ -64,11 +64,16 @@ class Redactor:
         detectors: tuple[Detector, ...] = BUILTINS,
         user_rules: tuple[UserRule, ...] = (),
         allowlist: Allowlist | None = None,
+        redact_images: bool = False,
     ) -> None:
         self.vault = vault
         self.detectors = detectors
         self.user_rules = user_rules
         self.allowlist = allowlist if allowlist is not None else Allowlist()
+        # Per-request image policy carried alongside the text redactor: when True
+        # (and Apple Vision is available) adapters redact images in place instead
+        # of failing closed. Default False — images are refused (fail-closed).
+        self.redact_images = redact_images
 
         # Compile user rules into detectors once, up front. A user rule is a
         # name/pattern/token_prefix with no validator, so it maps cleanly onto a

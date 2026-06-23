@@ -206,6 +206,7 @@ def create_app(
             vault,
             user_rules=cfg.user_rules,
             allowlist=cfg.allowlist,
+            redact_images=cfg.redact_images,
         )
 
         try:

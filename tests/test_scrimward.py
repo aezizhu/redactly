@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import http.server
+import io
 import json
 import re
 import threading
@@ -29,6 +30,7 @@ from scrimward.adapters.openai_chat import OpenAIChatAdapter
 from scrimward.adapters.openai_responses import OpenAIResponsesAdapter
 from scrimward.config import Allowlist, Config, load_rules
 from scrimward.detectors import BUILTINS, detect
+from scrimward.image_redactor import image_redaction_available
 from scrimward.engine import Redactor
 from scrimward.proxy import create_app
 from scrimward.vault import Vault
@@ -494,6 +496,98 @@ def test_gemini_unmask_split_token():
 # NOTHING. These pin the headline "an image never leaks" guarantee for every
 # adapter — closing the fail-OPEN hole where image blocks were passed through
 # untouched.
+
+
+# --- image redaction v1 (Apple Vision, strict fill-all, opt-in) ------------
+#
+# When REDACT_IMAGES is on AND Vision is available, the Anthropic adapter
+# redacts an image in place (every text region + face → opaque box, re-verified)
+# instead of refusing. When off / unavailable / un-redactable → still fail closed.
+
+_VISION = image_redaction_available()
+
+
+def _text_png(text: str) -> bytes:
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.new("RGB", (700, 160), "white")
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 44)
+    except Exception:
+        font = ImageFont.load_default()
+    draw.text((20, 55), text, fill="black", font=font)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _anthropic_image_body(b64: str, media_type: str = "image/png") -> bytes:
+    return json.dumps(
+        {
+            "model": "x",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
+                    ],
+                }
+            ],
+        }
+    ).encode()
+
+
+@pytest.mark.skipif(not _VISION, reason="Apple Vision unavailable (non-macOS)")
+def test_image_redactor_strict_fill_removes_text():
+    from scrimward.image_redactor import _reverify_max_conf, _stack, redact_image_bytes
+
+    raw = _text_png("SECRET AKIAIOSFODNN7EXAMPLE")
+    out = redact_image_bytes(raw, "image/png")  # raises if any text survives
+    assert out and out != raw
+    vision, nsdata, _img, _draw = _stack()
+    assert _reverify_max_conf(vision, nsdata, out) == 0.0  # no readable text remains
+
+
+@pytest.mark.skipif(not _VISION, reason="Apple Vision unavailable (non-macOS)")
+def test_anthropic_redacts_image_when_enabled():
+    import base64
+
+    from scrimward.image_redactor import _reverify_max_conf, _stack
+
+    raw = _text_png("SECRET AKIAIOSFODNN7EXAMPLE")
+    b64 = base64.b64encode(raw).decode()
+    red = Redactor(Vault("s"), redact_images=True)
+    out = AnthropicAdapter().redact_request(_anthropic_image_body(b64), red)  # no raise
+    new_b64 = json.loads(out)["messages"][0]["content"][0]["source"]["data"]
+    assert new_b64 != b64  # image bytes replaced with the redacted version
+    vision, nsdata, _img, _draw = _stack()
+    assert _reverify_max_conf(vision, nsdata, base64.b64decode(new_b64)) == 0.0
+
+
+def test_anthropic_image_fails_closed_when_disabled():
+    # default (redact_images off) → image still refused, fail-closed.
+    red = Redactor(Vault("s"))
+    with pytest.raises(Exception):
+        AnthropicAdapter().redact_request(_anthropic_image_body("AAAA"), red)
+
+
+def test_anthropic_url_image_fails_closed_even_when_enabled():
+    # a url-source image can't be redacted locally → fail closed regardless.
+    body = json.dumps(
+        {
+            "model": "x",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "image", "source": {"type": "url", "url": "https://x/y.png"}}],
+                }
+            ],
+        }
+    ).encode()
+    red = Redactor(Vault("s"), redact_images=True)
+    with pytest.raises(Exception):
+        AnthropicAdapter().redact_request(body, red)
 
 
 def test_anthropic_fail_closed_on_image_block():

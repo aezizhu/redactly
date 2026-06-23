@@ -17,10 +17,12 @@ structurally (no inheritance required).
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import AsyncIterator, Mapping
 
 from ..engine import Redactor
+from ..image_redactor import ImageRedactionError, image_redaction_available, redact_image_bytes
 from ..vault import TOKEN_CLOSE, TOKEN_OPEN, Vault
 from .base import AttachmentRedactionUnsupported
 
@@ -213,9 +215,11 @@ class AnthropicAdapter:
                 f"got {type(block).__name__}"
             )
         btype = block.get("type")
-        if btype in ("image", "document"):
+        if btype == "image":
+            return self._redact_image_block(block, red)
+        if btype == "document":
             raise AttachmentRedactionUnsupported(
-                f"anthropic: request contains a {btype} block, which cannot be "
+                "anthropic: request contains a document block, which cannot be "
                 "redacted yet — refusing to forward it (fail-closed)"
             )
         if btype == "text":
@@ -229,6 +233,37 @@ class AnthropicAdapter:
         elif btype == "tool_result":
             if "content" in block:
                 block["content"] = self._redact_content(block["content"], red)
+        return block
+
+    def _redact_image_block(self, block: dict, red: Redactor) -> dict:
+        """Redact an ``image`` block in place, or FAIL CLOSED.
+
+        When image redaction is disabled, Vision is unavailable, the source is
+        not inline base64, or redaction raises for ANY reason, this raises
+        ``AttachmentRedactionUnsupported`` so the proxy blocks the whole request
+        (the image never reaches the wire). Otherwise the base64 image is
+        replaced with its redacted (text + faces opaque-filled) version.
+        """
+        if not (red.redact_images and image_redaction_available()):
+            raise AttachmentRedactionUnsupported(
+                "anthropic: request contains an image block and image redaction "
+                "is off/unavailable — refusing to forward it (fail-closed)"
+            )
+        source = block.get("source")
+        if not isinstance(source, dict) or source.get("type") != "base64":
+            raise AttachmentRedactionUnsupported(
+                "anthropic: image source is not inline base64 (cannot redact a "
+                "referenced/URL image) — refusing to forward it (fail-closed)"
+            )
+        try:
+            raw = base64.b64decode(source["data"], validate=True)
+            redacted = redact_image_bytes(raw, str(source.get("media_type", "")))
+        except (ImageRedactionError, KeyError, ValueError, TypeError) as exc:
+            raise AttachmentRedactionUnsupported(
+                f"anthropic: image could not be safely redacted ({exc}) — "
+                "refusing to forward it (fail-closed)"
+            ) from exc
+        source["data"] = base64.b64encode(redacted).decode("ascii")
         return block
 
     async def unmask_stream(

@@ -31,6 +31,10 @@ ENV_HOST = "REDACT_HOST"
 ENV_PORT = "REDACT_PORT"
 ENV_RULES = "REDACT_RULES"
 ENV_VAULT = "REDACT_VAULT"
+ENV_IMAGES = "REDACT_IMAGES"
+
+# Truthy values that enable on-device image redaction (macOS + Apple Vision).
+_TRUTHY = frozenset({"1", "true", "on", "yes", "strict"})
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,7 @@ class Config:
     vault_path: Path | None = None
     user_rules: tuple[UserRule, ...] = ()
     allowlist: Allowlist = field(default_factory=Allowlist)
+    redact_images: bool = False
 
 
 def load(*, rules_path: str | os.PathLike[str] | None = None) -> Config:
@@ -85,6 +90,8 @@ def load(*, rules_path: str | os.PathLike[str] | None = None) -> Config:
     vault_env = os.environ.get(ENV_VAULT)
     vault_path = Path(vault_env) if vault_env else None
 
+    redact_images = os.environ.get(ENV_IMAGES, "").strip().lower() in _TRUTHY
+
     if rules_path_p.exists():
         user_rules, allowlist = load_rules(rules_path_p)
     else:
@@ -98,6 +105,7 @@ def load(*, rules_path: str | os.PathLike[str] | None = None) -> Config:
         vault_path=vault_path,
         user_rules=user_rules,
         allowlist=allowlist,
+        redact_images=redact_images,
     )
 
 
