@@ -384,6 +384,109 @@ def test_gemini_unmask_stream():
     assert token not in result
 
 
+# --- streaming hardening: cross-chunk token reassembly for EVERY adapter ----
+#
+# The most leak-prone path is a masked token «PREFIX_salt_N» split across two SSE
+# deltas — a carry-buffer bug there would emit a half-substituted token. These
+# prove the un-mask reassembles correctly for all four providers (the audit found
+# 3 of 4 adapters had no split test).
+
+
+def test_anthropic_unmask_reassembles_at_every_split():
+    v = Vault("s")
+    token = v.token_for("topsecret@example.com", "EMAIL")
+
+    def make_src(cut):
+        async def src():
+            yield (
+                'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":%s}}\n\n'
+                % json.dumps("see " + token[:cut])
+            ).encode()
+            yield (
+                'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":%s}}\n\n'
+                % json.dumps(token[cut:] + " end")
+            ).encode()
+            yield b'data: {"type":"message_stop"}\n\n'
+        return src
+
+    for cut in range(1, len(token)):  # split at EVERY interior position
+        async def collect(s=make_src(cut)):
+            out = b""
+            async for c in AnthropicAdapter().unmask_stream(s(), v):
+                out += c
+            return out.decode("utf-8")
+        result = _run(collect())
+        assert "topsecret@example.com" in result, f"split at {cut} not reassembled: {result!r}"
+        assert token not in result, f"token leaked at split {cut}"
+
+
+def test_openai_chat_unmask_split_token():
+    v = Vault("s")
+    token = v.token_for("secret@example.com", "EMAIL")
+    h = len(token) // 2
+
+    async def src():
+        yield ('data: {"choices":[{"delta":{"content":%s}}]}\n\n' % json.dumps("got " + token[:h])).encode()
+        yield ('data: {"choices":[{"delta":{"content":%s}}]}\n\n' % json.dumps(token[h:] + " ok")).encode()
+        yield b"data: [DONE]\n\n"
+
+    async def collect():
+        out = b""
+        async for c in OpenAIChatAdapter().unmask_stream(src(), v):
+            out += c
+        return out.decode("utf-8")
+
+    result = _run(collect())
+    assert "secret@example.com" in result
+    assert token not in result
+
+
+def test_openai_responses_unmask_split_token():
+    v = Vault("s")
+    token = v.token_for("secret@example.com", "EMAIL")
+    h = len(token) // 2
+
+    async def src():
+        yield (
+            "event: response.output_text.delta\n"
+            'data: {"type":"response.output_text.delta","delta":%s}\n\n' % json.dumps("got " + token[:h])
+        ).encode()
+        yield (
+            "event: response.output_text.delta\n"
+            'data: {"type":"response.output_text.delta","delta":%s}\n\n' % json.dumps(token[h:] + " ok")
+        ).encode()
+
+    async def collect():
+        out = b""
+        async for c in OpenAIResponsesAdapter().unmask_stream(src(), v):
+            out += c
+        return out.decode("utf-8")
+
+    result = _run(collect())
+    assert "secret@example.com" in result
+    assert token not in result
+
+
+def test_gemini_unmask_split_token():
+    v = Vault("s")
+    token = v.token_for("secret@example.com", "EMAIL")
+    h = len(token) // 2
+
+    async def src():
+        yield ('data: {"candidates":[{"content":{"parts":[{"text":%s}]}}]}\n\n' % json.dumps("got " + token[:h])).encode()
+        yield ('data: {"candidates":[{"content":{"parts":[{"text":%s}]}}]}\n\n' % json.dumps(token[h:] + " ok")).encode()
+
+    async def collect():
+        out = b""
+        async for c in GeminiAdapter().unmask_stream(src(), v):
+            out += c
+        return out.decode("utf-8")
+
+    result = _run(collect())
+    assert "secret@example.com" in result
+    assert token not in result
+
+
 # --- image fail-closed (no Apple Vision yet → refuse, never forward) -------
 #
 # Image redaction is not implemented. Until it is, ANY request carrying an
