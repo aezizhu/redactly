@@ -37,6 +37,9 @@ _DATA_URI_RE = re.compile(r"^data:(?P<mime>image/[A-Za-z0-9.+-]+);base64,(?P<dat
 _PAD = 0.10
 # Provider media types we can decode + re-encode losslessly enough to redact.
 _SUPPORTED: dict[str, str] = {"image/png": "PNG", "image/jpeg": "JPEG", "image/jpg": "JPEG"}
+# PDF pages render at this multiple of their point size (72 DPI × 3 = 216 DPI) so
+# small body text clears Vision's OCR floor (see _rasterize_pdf_page).
+_PDF_RENDER_SCALE = 3
 
 
 class ImageRedactionError(RuntimeError):
@@ -178,17 +181,25 @@ def redact_data_uri(uri: str) -> str:
 
 
 def _rasterize_pdf_page(quartz, doc, page_number: int) -> bytes:
-    """Render one PDF page (white-backed) to PNG bytes via Quartz."""
+    """Render one PDF page (white-backed) to PNG bytes via Quartz, at 3× scale.
+
+    The media box is in POINTS (72/inch), so rendering 1:1 is 72 DPI — at which
+    9-12pt body text is ~9-12px, at/below Vision's OCR floor. Vision would then
+    miss it AND the re-verify (run on the same raster) would miss it too, a
+    silent leak. Rendering at 3× (216 DPI) lifts small text above the floor.
+    """
     page = quartz.CGPDFDocumentGetPage(doc, page_number)
     rect = quartz.CGPDFPageGetBoxRect(page, quartz.kCGPDFMediaBox)
-    width = max(1, int(rect.size.width))
-    height = max(1, int(rect.size.height))
+    scale = _PDF_RENDER_SCALE
+    width = max(1, int(rect.size.width * scale))
+    height = max(1, int(rect.size.height * scale))
     cs = quartz.CGColorSpaceCreateDeviceRGB()
     ctx = quartz.CGBitmapContextCreate(None, width, height, 8, 0, cs, quartz.kCGImageAlphaPremultipliedLast)
     if ctx is None:
         raise ImageRedactionError("could not create a bitmap context for a PDF page")
     quartz.CGContextSetRGBFillColor(ctx, 1, 1, 1, 1)
-    quartz.CGContextFillRect(ctx, rect)
+    quartz.CGContextFillRect(ctx, quartz.CGRectMake(0, 0, width, height))
+    quartz.CGContextScaleCTM(ctx, scale, scale)  # points → 3× pixels so small text is OCR-able
     quartz.CGContextDrawPDFPage(ctx, page)
     cgimage = quartz.CGBitmapContextCreateImage(ctx)
     out = quartz.CFDataCreateMutable(None, 0)

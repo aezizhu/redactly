@@ -677,19 +677,38 @@ def _text_png(text: str) -> bytes:
     return buf.getvalue()
 
 
-def _text_pdf(text: str) -> bytes:
+def _pdf_page_image(text: str, font_size: int = 40):
     from PIL import Image, ImageDraw, ImageFont
 
-    img = Image.new("RGB", (612, 200), "white")
+    img = Image.new("RGB", (612, 300), "white")
     draw = ImageDraw.Draw(img)
     try:
-        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 40)
+        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
     except Exception:
         font = ImageFont.load_default()
-    draw.text((30, 80), text, fill="black", font=font)
+    draw.text((30, 140), text, fill="black", font=font)
+    return img
+
+
+def _text_pdf(text: str, font_size: int = 40) -> bytes:
     buf = io.BytesIO()
-    img.save(buf, "PDF", resolution=72.0)
+    _pdf_page_image(text, font_size).save(buf, "PDF", resolution=72.0)
     return buf.getvalue()
+
+
+def _pdf_page_has_no_text(pdf_bytes: bytes, page: int = 1) -> bool:
+    # Rasterize the (already-redacted) page at the render scale and confirm Vision
+    # finds no readable text — i.e. nothing leaked through.
+    import Quartz
+    from CoreFoundation import CFDataCreate
+
+    from scrimward.image_redactor import _detect_boxes, _rasterize_pdf_page, _stack
+
+    data = CFDataCreate(None, pdf_bytes, len(pdf_bytes))
+    doc = Quartz.CGPDFDocumentCreateWithProvider(Quartz.CGDataProviderCreateWithCFData(data))
+    png = _rasterize_pdf_page(Quartz, doc, page)
+    vision, nsdata, _img, _draw = _stack()
+    return _detect_boxes(vision, nsdata, png) == []
 
 
 def _anthropic_pdf_body(b64: str) -> bytes:
@@ -723,6 +742,38 @@ def test_anthropic_pdf_fails_closed_when_disabled():
     # default (redact_pdf off) → document/PDF still refused.
     with pytest.raises(Exception):
         AnthropicAdapter().redact_request(_anthropic_pdf_body("JVBERi0="), Redactor(Vault("s")))
+
+
+@pytest.mark.skipif(not _VISION, reason="Apple Vision unavailable (non-macOS)")
+def test_pdf_redaction_handles_small_body_text():
+    # The 72-DPI leak guard: ~12px body text would be missed if rendered 1:1.
+    from scrimward.image_redactor import redact_pdf_bytes
+
+    out = redact_pdf_bytes(_text_pdf("SECRET AKIAIOSFODNN7EXAMPLE body text", font_size=12))
+    assert _pdf_page_has_no_text(out)  # no readable text survived the redaction
+
+
+@pytest.mark.skipif(not _VISION, reason="Apple Vision unavailable (non-macOS)")
+def test_pdf_redaction_multipage():
+    from scrimward.image_redactor import redact_pdf_bytes
+
+    buf = io.BytesIO()
+    _pdf_page_image("page one").save(
+        buf, "PDF", save_all=True, append_images=[_pdf_page_image("SECRET AKIAIOSFODNN7EXAMPLE")], resolution=72.0
+    )
+    out = redact_pdf_bytes(buf.getvalue())
+    assert _pdf_page_has_no_text(out, page=2)  # the secret on page 2 was redacted
+
+
+@pytest.mark.skipif(not _VISION, reason="Apple Vision unavailable (non-macOS)")
+def test_pdf_redaction_fails_closed_when_a_page_cant_be_cleaned(monkeypatch):
+    # If a page's fill misses (forced here), the per-page re-verify must make the
+    # whole PDF redaction RAISE → the adapter fails closed.
+    import scrimward.image_redactor as ir
+
+    monkeypatch.setattr(ir, "_to_pixel_rect", lambda *a, **k: (0, 0, 0, 0))
+    with pytest.raises(ir.ImageRedactionError):
+        ir.redact_pdf_bytes(_text_pdf("SECRET AKIAIOSFODNN7EXAMPLE"))
 
 
 def _anthropic_image_body(b64: str, media_type: str = "image/png") -> bytes:
