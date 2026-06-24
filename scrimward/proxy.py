@@ -148,10 +148,17 @@ def _unmask_node(node: object, vault: Vault) -> object:
         # Restore tokens in KEYS as well as values: the request side tokenizes a
         # secret used as a dict key, so the reply must un-mask it back if a model
         # echoes the object keyed by that token. Rebuild to remap keys in place.
-        rebuilt = {}
+        # Unlike the request side we CANNOT raise here (that would corrupt an
+        # already-produced reply) so on the (practically unreachable — the vault
+        # maps one secret to one token, so a model can't emit two distinct keys
+        # that un-mask to the same value) chance of a key collision we keep the
+        # first occurrence rather than silently last-wins.
+        rebuilt: dict = {}
         for k in list(node.keys()):
             nk = vault.unmask(k) if isinstance(k, str) else k
-            rebuilt[nk] = _unmask_node(node[k], vault)
+            uv = _unmask_node(node[k], vault)
+            if nk not in rebuilt:
+                rebuilt[nk] = uv
         node.clear()
         node.update(rebuilt)
         return node

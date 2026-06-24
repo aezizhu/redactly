@@ -286,6 +286,18 @@ def test_redact_object_redacts_secret_as_dict_key():
     assert len(obj["results"]) == 2  # both entries survive (structure intact)
 
 
+def test_redact_object_fails_closed_on_key_token_collision():
+    # Two DISTINCT keys that normalize to the same secret would tokenize to one
+    # key and collapse — silently dropping an entry. Refuse (fail-closed) rather
+    # than drop request data; both keys are still masked, nothing leaks.
+    red = Redactor(Vault("s"))
+    ascii_k = _j("AKIA", "IOSFODNN7EXAMPLE")
+    full_k = "ＡＫＩＡＩＯＳＦＯＤＮＮ７ＥＸＡＭＰＬＥ"  # full-width; NFKC-folds to ascii_k
+    obj = {ascii_k: "a", full_k: "b"}
+    with pytest.raises(ValueError):
+        red.redact_object(obj)
+
+
 def test_redact_object_redacts_data_uri_wrapped_secret():
     # Final re-audit CRITICAL: a secret wrapped as data:<type>/<sub>;base64,<plaintext>
     # in an un-enumerated field must NOT be skipped via a value prefix (the backstop

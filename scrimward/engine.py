@@ -195,10 +195,13 @@ class Redactor:
         if isinstance(node, dict):
             # Walk KEYS as well as values: a secret/PII used as an object key
             # (an AWS export keyed by access-key-id, a CRM keyed by email) is a
-            # string leaf on the wire. Rebuild in place so order is preserved and
-            # the (rare) case of two keys colliding to one token can't drop data
-            # silently — redact_text leaves non-secret field names unchanged.
-            rebuilt = {}
+            # string leaf on the wire. Rebuild in place so order is preserved.
+            # redact_text leaves non-secret field names unchanged, so collisions
+            # are impossible unless two DISTINCT keys normalize+tokenize to the
+            # same value (e.g. a full-width and an ASCII spelling of one secret);
+            # collapsing them would silently DROP an entry, so we fail closed
+            # (the proxy turns the raise into a 5xx) rather than lose request data.
+            rebuilt: dict = {}
             for k in list(node.keys()):
                 v = node[k]
                 if isinstance(v, str):
@@ -206,6 +209,11 @@ class Redactor:
                 else:
                     nv = self._redact_node(v)
                 nk = self.redact_text(k) if isinstance(k, str) else k
+                if nk in rebuilt:
+                    raise ValueError(
+                        "redact_object: two object keys redact to the same token "
+                        "(normalization collision) — refusing to drop an entry (fail-closed)"
+                    )
                 rebuilt[nk] = nv
             node.clear()
             node.update(rebuilt)
