@@ -108,12 +108,15 @@ def wrap_cmd(tool: str, port: int | None, tool_args: tuple[str, ...]) -> None:
     spec = WRAP_TOOLS[tool]
     port = port or spec["port"]
     base_url = f"http://{DEFAULT_HOST}:{port}{spec['base_suffix']}"
+    _check_proxyable_provider(tool)  # refuse on Bedrock/Vertex rather than leak
     _ensure_proxy(port, upstream=spec["upstream"])
 
     env = os.environ.copy()
     env[spec["env"]] = base_url
     for extra in spec.get("extra_base_env", ()):
         env[extra] = base_url
+    for var in _TELEMETRY_OFF:  # don't leak metadata via non-inference channels
+        env[var] = "1"
     previous = None
     if spec["write_claude_settings"]:
         previous = _write_base_url(f"http://{DEFAULT_HOST}:{port}")
@@ -155,6 +158,29 @@ _SCRIMWARD_INVOCATION = re.compile(r"^\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?scrimw
 def _is_scrimward_bootstrap(command: str) -> bool:
     """True only if ``command`` actually invokes the scrimward CLI."""
     return bool(_SCRIMWARD_INVOCATION.match(command or ""))
+
+
+# Auth modes the proxy CANNOT intercept: Bedrock / Vertex use SigV4-signed
+# endpoints that ignore ANTHROPIC_BASE_URL, so Claude Code would bypass the proxy
+# entirely. Refuse to launch rather than run unprotected.
+_UNPROXYABLE_VARS = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX")
+# Non-inference telemetry channels disabled in the wrapped env so metadata can't
+# leak past the proxy (these don't go through ANTHROPIC_BASE_URL).
+_TELEMETRY_OFF = ("DISABLE_TELEMETRY", "DISABLE_ERROR_REPORTING", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
+
+
+def _check_proxyable_provider(tool: str, environ: dict | None = None) -> None:
+    """Raise ``SystemExit`` if ``tool`` is configured for an un-proxyable provider."""
+    if tool != "claude":
+        return
+    env = environ if environ is not None else os.environ
+    for var in _UNPROXYABLE_VARS:
+        if env.get(var, "").strip().lower() in ("1", "true", "yes", "on"):
+            raise SystemExit(
+                f"scrimward: {var} is set — Claude Code would route to Bedrock/Vertex "
+                "(SigV4-signed, un-proxyable), bypassing redaction entirely. Unset it "
+                "to run under Scrimward."
+            )
 
 
 def _healthz(port: int, host: str = DEFAULT_HOST) -> bool:

@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scrimward"
-version = "0.0.1"
+version = "0.1.0"
 description = "Local, fail-closed redaction proxy for AI coding tools — mask secrets before they leave your machine."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
-authors = [{ name = "Scrimward" }]
+authors = [{ name = "Aezi Zhu" }]
 keywords = ["redaction", "privacy", "proxy", "pii", "secrets", "llm", "ai-coding"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
@@ -43,7 +43,7 @@ vault-encrypt = ["cryptography>=42"]
 scrimward = "scrimward.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/scrimward/scrimward"
+Homepage = "https://github.com/aezizhu/scrimward"
 
 [tool.setuptools.packages.find]
 where = ["."]

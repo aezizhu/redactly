@@ -559,6 +559,18 @@ def test_is_routed_requires_matching_url_and_healthz(monkeypatch, tmp_path):
     assert cli._is_routed(8788, settings_path=p) is False  # wrong URL → not routed
 
 
+def test_wrap_refuses_unproxyable_bedrock_vertex():
+    # M13: Bedrock/Vertex (SigV4, ignore ANTHROPIC_BASE_URL) bypass the proxy —
+    # wrap must REFUSE rather than launch Claude Code unprotected.
+    from scrimward import cli
+
+    cli._check_proxyable_provider("claude", {})  # nothing set → fine
+    for var in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"):
+        with pytest.raises(SystemExit):
+            cli._check_proxyable_provider("claude", {var: "1"})
+    cli._check_proxyable_provider("codex", {"CLAUDE_CODE_USE_BEDROCK": "1"})  # non-claude → no-op
+
+
 def test_write_and_restore_base_url_round_trip(tmp_path):
     from scrimward import cli
 

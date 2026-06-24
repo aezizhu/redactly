@@ -96,8 +96,8 @@ that stands the proxy up and **fails closed** if the route isn't active.
 |---|---|
 | Feasibility & threat-model verification | ✅ Done — [`docs/VERIFICATION.md`](docs/VERIFICATION.md) |
 | Architecture & spec | ✅ Done |
-| Redaction engine (text, reversible vault) | ✅ Done — 10/10 tests |
-| Local proxy (streaming, fail-closed) | ✅ Done — 10/10 tests |
+| Redaction engine (text, reversible vault, recursive deny-by-default) | ✅ Done |
+| Local proxy (streaming + non-streaming un-mask, fail-closed) | ✅ Done |
 | Adapters: Anthropic, OpenAI-Chat, OpenAI-Responses | ✅ Done |
 | **Claude Code plugin** (slash commands + fail-closed guard hook) | ✅ Done |
 | Go PreToolUse guard — single static binary, ~10× faster, golden-parity tested vs Python (`make guard`; auto-fallback to Python) | ✅ v1 |
@@ -188,7 +188,7 @@ This is a guardrail against leaks, not a guarantee against a determined adversar
 
 - **The proxy and text redaction are cross-platform** — they run wherever your tool does. Cline (VS Code), Codex, Aider, Gemini CLI, Copilot, and Claude Code are all cross-platform.
 - At least one **supported tool** (see the table above) you can point at the local proxy.
-- **macOS (Apple Silicon) will be required for image redaction (planned)**, which will use the native Apple Vision framework on-device. Until then images fail closed on any OS, and everything else works anywhere.
+- **macOS (Apple Silicon) is required for image/PDF redaction** (opt-in via `REDACT_IMAGES` / `REDACT_PDF`, using the native Apple Vision framework on-device; install the `image` extra). Off by default and on non-macOS, images & PDFs **fail closed** (are refused); everything else works on any OS.
 
 ## Documentation
 

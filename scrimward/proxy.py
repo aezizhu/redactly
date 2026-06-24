@@ -36,6 +36,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
+from . import __version__
 from . import config as _config
 from .adapters import ADAPTERS
 from .adapters.base import Adapter
@@ -202,7 +203,7 @@ def create_app(
     registry: Sequence[Adapter] = adapters if adapters is not None else ADAPTERS
     upstream = cfg.upstream.rstrip("/")
 
-    app = FastAPI(title="Scrimward", version="0.0.1")
+    app = FastAPI(title="Scrimward", version=__version__)
 
     @app.get("/healthz")
     async def healthz() -> JSONResponse:
