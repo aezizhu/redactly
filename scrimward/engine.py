@@ -65,6 +65,7 @@ class Redactor:
         user_rules: tuple[UserRule, ...] = (),
         allowlist: Allowlist | None = None,
         redact_images: bool = False,
+        redact_pdf: bool = False,
         detect_entropy: bool = False,
     ) -> None:
         self.vault = vault
@@ -83,6 +84,9 @@ class Redactor:
         # (and Apple Vision is available) adapters redact images in place instead
         # of failing closed. Default False — images are refused (fail-closed).
         self.redact_images = redact_images
+        # PDF redaction is a separate opt-in: it rasterizes each page (dropping
+        # the searchable text layer), a heavier transform than image redaction.
+        self.redact_pdf = redact_pdf
 
         # Compile user rules into detectors once, up front. A user rule is a
         # name/pattern/token_prefix with no validator, so it maps cleanly onto a

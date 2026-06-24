@@ -22,7 +22,12 @@ import json
 from collections.abc import AsyncIterator, Mapping
 
 from ..engine import Redactor
-from ..image_redactor import ImageRedactionError, image_redaction_available, redact_image_bytes
+from ..image_redactor import (
+    ImageRedactionError,
+    image_redaction_available,
+    redact_image_bytes,
+    redact_pdf_bytes,
+)
 from ..vault import TOKEN_CLOSE, TOKEN_OPEN, Vault
 from .base import AttachmentRedactionUnsupported
 
@@ -218,10 +223,7 @@ class AnthropicAdapter:
         if btype == "image":
             return self._redact_image_block(block, red)
         if btype == "document":
-            raise AttachmentRedactionUnsupported(
-                "anthropic: request contains a document block, which cannot be "
-                "redacted yet — refusing to forward it (fail-closed)"
-            )
+            return self._redact_document_block(block, red)
         if btype == "text":
             text = block.get("text")
             if not isinstance(text, str):
@@ -262,6 +264,39 @@ class AnthropicAdapter:
             raise AttachmentRedactionUnsupported(
                 f"anthropic: image could not be safely redacted ({exc}) — "
                 "refusing to forward it (fail-closed)"
+            ) from exc
+        source["data"] = base64.b64encode(redacted).decode("ascii")
+        return block
+
+    def _redact_document_block(self, block: dict, red: Redactor) -> dict:
+        """Redact an inline base64 PDF ``document`` block, or FAIL CLOSED.
+
+        Only inline base64 ``application/pdf`` is redactable (rasterize → fill →
+        re-verify → reflatten). A non-PDF document, a URL/file reference, PDF
+        redaction disabled/unavailable, or any redaction error → refuse.
+        """
+        source = block.get("source")
+        if (
+            not isinstance(source, dict)
+            or source.get("type") != "base64"
+            or str(source.get("media_type", "")) != "application/pdf"
+        ):
+            raise AttachmentRedactionUnsupported(
+                "anthropic: document block is not an inline base64 PDF — cannot "
+                "redact it; refusing to forward it (fail-closed)"
+            )
+        if not (red.redact_pdf and image_redaction_available()):
+            raise AttachmentRedactionUnsupported(
+                "anthropic: request contains a PDF document and PDF redaction is "
+                "off/unavailable — refusing to forward it (fail-closed)"
+            )
+        try:
+            raw = base64.b64decode(source["data"], validate=True)
+            redacted = redact_pdf_bytes(raw)
+        except (ImageRedactionError, KeyError, ValueError, TypeError) as exc:
+            raise AttachmentRedactionUnsupported(
+                f"anthropic: PDF could not be safely redacted ({exc}) — refusing "
+                "to forward it (fail-closed)"
             ) from exc
         source["data"] = base64.b64encode(redacted).decode("ascii")
         return block

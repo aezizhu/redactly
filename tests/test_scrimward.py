@@ -677,6 +677,54 @@ def _text_png(text: str) -> bytes:
     return buf.getvalue()
 
 
+def _text_pdf(text: str) -> bytes:
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.new("RGB", (612, 200), "white")
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 40)
+    except Exception:
+        font = ImageFont.load_default()
+    draw.text((30, 80), text, fill="black", font=font)
+    buf = io.BytesIO()
+    img.save(buf, "PDF", resolution=72.0)
+    return buf.getvalue()
+
+
+def _anthropic_pdf_body(b64: str) -> bytes:
+    return json.dumps(
+        {
+            "model": "x",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": b64}},
+                    ],
+                }
+            ],
+        }
+    ).encode()
+
+
+@pytest.mark.skipif(not _VISION, reason="Apple Vision unavailable (non-macOS)")
+def test_anthropic_redacts_pdf_when_enabled():
+    import base64
+
+    b64 = base64.b64encode(_text_pdf("SECRET AKIAIOSFODNN7EXAMPLE")).decode()
+    out = AnthropicAdapter().redact_request(_anthropic_pdf_body(b64), Redactor(Vault("s"), redact_pdf=True))
+    new_b64 = json.loads(out)["messages"][0]["content"][0]["source"]["data"]
+    assert new_b64 != b64  # rasterized + redacted + reassembled
+    assert base64.b64decode(new_b64).startswith(b"%PDF")  # still a valid PDF (re-verify passed)
+
+
+def test_anthropic_pdf_fails_closed_when_disabled():
+    # default (redact_pdf off) → document/PDF still refused.
+    with pytest.raises(Exception):
+        AnthropicAdapter().redact_request(_anthropic_pdf_body("JVBERi0="), Redactor(Vault("s")))
+
+
 def _anthropic_image_body(b64: str, media_type: str = "image/png") -> bytes:
     return json.dumps(
         {

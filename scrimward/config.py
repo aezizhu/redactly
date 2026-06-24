@@ -14,6 +14,9 @@ Environment variables (all optional; local-first defaults):
   vault keeps NO cleartext at rest (needs the ``vault-encrypt`` extra). Off by default.
 - ``REDACT_IMAGES``   — opt-in on-device image redaction via Apple Vision (macOS;
   needs the ``image`` extra). Off by default → images fail closed.
+- ``REDACT_PDF``      — opt-in PDF redaction: rasterize each page → redact → re-
+  verify → reflatten (Apple Vision, macOS; drops the searchable text layer).
+  Off by default → PDFs fail closed.
 - ``REDACT_ENTROPY``  — opt-in: enable the shapeless high-entropy catch-all that
   masks un-prefixed secrets. Off by default (it also masks git SHAs / hashes /
   UUIDs, which is noisy in coding prompts). Suppress confirmed false positives
@@ -42,6 +45,7 @@ ENV_RULES = "REDACT_RULES"
 ENV_VAULT = "REDACT_VAULT"
 ENV_VAULT_ENCRYPT = "REDACT_VAULT_ENCRYPT"
 ENV_IMAGES = "REDACT_IMAGES"
+ENV_PDF = "REDACT_PDF"
 ENV_ENTROPY = "REDACT_ENTROPY"
 
 # Truthy values that enable on-device image redaction (macOS + Apple Vision).
@@ -84,6 +88,7 @@ class Config:
     user_rules: tuple[UserRule, ...] = ()
     allowlist: Allowlist = field(default_factory=Allowlist)
     redact_images: bool = False
+    redact_pdf: bool = False
     detect_entropy: bool = False
 
 
@@ -105,6 +110,7 @@ def load(*, rules_path: str | os.PathLike[str] | None = None) -> Config:
     vault_encrypt = os.environ.get(ENV_VAULT_ENCRYPT, "").strip().lower() in _TRUTHY
 
     redact_images = os.environ.get(ENV_IMAGES, "").strip().lower() in _TRUTHY
+    redact_pdf = os.environ.get(ENV_PDF, "").strip().lower() in _TRUTHY
     detect_entropy = os.environ.get(ENV_ENTROPY, "").strip().lower() in _TRUTHY
 
     if rules_path_p.exists():
@@ -122,6 +128,7 @@ def load(*, rules_path: str | os.PathLike[str] | None = None) -> Config:
         user_rules=user_rules,
         allowlist=allowlist,
         redact_images=redact_images,
+        redact_pdf=redact_pdf,
         detect_entropy=detect_entropy,
     )
 

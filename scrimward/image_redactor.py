@@ -175,3 +175,66 @@ def redact_data_uri(uri: str) -> str:
         raise ImageRedactionError(f"data URI base64 is invalid: {exc}") from exc
     redacted = redact_image_bytes(raw, match.group("mime"))
     return f"data:{match.group('mime')};base64,{base64.b64encode(redacted).decode('ascii')}"
+
+
+def _rasterize_pdf_page(quartz, doc, page_number: int) -> bytes:
+    """Render one PDF page (white-backed) to PNG bytes via Quartz."""
+    page = quartz.CGPDFDocumentGetPage(doc, page_number)
+    rect = quartz.CGPDFPageGetBoxRect(page, quartz.kCGPDFMediaBox)
+    width = max(1, int(rect.size.width))
+    height = max(1, int(rect.size.height))
+    cs = quartz.CGColorSpaceCreateDeviceRGB()
+    ctx = quartz.CGBitmapContextCreate(None, width, height, 8, 0, cs, quartz.kCGImageAlphaPremultipliedLast)
+    if ctx is None:
+        raise ImageRedactionError("could not create a bitmap context for a PDF page")
+    quartz.CGContextSetRGBFillColor(ctx, 1, 1, 1, 1)
+    quartz.CGContextFillRect(ctx, rect)
+    quartz.CGContextDrawPDFPage(ctx, page)
+    cgimage = quartz.CGBitmapContextCreateImage(ctx)
+    out = quartz.CFDataCreateMutable(None, 0)
+    dest = quartz.CGImageDestinationCreateWithData(out, "public.png", 1, None)
+    quartz.CGImageDestinationAddImage(dest, cgimage, None)
+    if not quartz.CGImageDestinationFinalize(dest):
+        raise ImageRedactionError("could not rasterize a PDF page")
+    return bytes(out)
+
+
+def redact_pdf_bytes(raw: bytes) -> bytes:
+    """Redact a PDF by rasterizing each page → opaque-fill → re-verify → reflatten.
+
+    There is no sound text-layer redaction (a black box leaves selectable glyphs,
+    and embedded raster images leak), so every page is rendered to a bitmap, run
+    through the same strict image pipeline (which REFUSES if any readable text
+    survives), and the redacted pages are reassembled into a new flattened PDF —
+    the searchable text layer is intentionally dropped. Raises
+    :class:`ImageRedactionError` on ANY doubt (Vision unavailable, undecodable
+    PDF, or a page that fails re-verify), so the caller fails closed.
+    """
+    stack = _stack()
+    if stack is None:
+        raise ImageRedactionError("apple vision is unavailable on this machine")
+    _vision, _nsdata_cls, image_cls, _draw = stack
+    try:
+        import Quartz
+        from CoreFoundation import CFDataCreate
+    except Exception as exc:  # pragma: no cover — gated by _stack() above
+        raise ImageRedactionError(f"quartz unavailable: {exc}") from exc
+
+    data = CFDataCreate(None, raw, len(raw))
+    provider = Quartz.CGDataProviderCreateWithCFData(data)
+    doc = Quartz.CGPDFDocumentCreateWithProvider(provider)
+    if doc is None:
+        raise ImageRedactionError("cannot open PDF")
+    pages_total = Quartz.CGPDFDocumentGetNumberOfPages(doc)
+    if pages_total < 1:
+        raise ImageRedactionError("PDF has no pages")
+
+    redacted_pages = []
+    for page_number in range(1, pages_total + 1):
+        page_png = _rasterize_pdf_page(Quartz, doc, page_number)
+        clean_png = redact_image_bytes(page_png, "image/png")  # re-verifies per page
+        redacted_pages.append(image_cls.open(io.BytesIO(clean_png)).convert("RGB"))
+
+    out = io.BytesIO()
+    redacted_pages[0].save(out, "PDF", save_all=True, append_images=redacted_pages[1:], resolution=72.0)
+    return out.getvalue()

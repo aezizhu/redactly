@@ -86,7 +86,7 @@ that stands the proxy up and **fails closed** if the route isn't active.
 - 🔒 **Local-first.** The proxy runs only on `127.0.0.1`. Your real data never leaves the machine.
 - 🔁 **Reversible.** Stable tokens out, real values restored in the reply via a local vault. Opt-in **encrypt-token mode** (`REDACT_VAULT_ENCRYPT`) makes the token itself an AES-SIV ciphertext — reversible with **no cleartext at rest**.
 - 🧠 **Smart detectors (~40 built-ins).** Cloud + SaaS keys/tokens (AWS, GCP, Azure, GitHub incl. fine-grained PATs, GitLab, Stripe, Slack, Twilio, SendGrid, npm/PyPI/HuggingFace, DigitalOcean, Shopify, Linear, Notion …), private keys, JWTs, OAuth tokens, DB/connection strings — plus PII (emails, phones, Luhn-checked cards, mod-97 IBAN, US SSN, IPs, MACs). Unicode-evasion-resistant (NFKC + zero-width stripping). Plus your own rules — and an opt-in **high-entropy catch-all** (`REDACT_ENTROPY`) for un-prefixed secrets (allowlist the git SHAs / hashes it over-fires on).
-- 🖼️ **Image redaction (opt-in, macOS).** By default images fail closed (refused). Set `REDACT_IMAGES=1` on macOS to redact them on-device with **Apple Vision**: every text region + face is covered with a **solid opaque box** (never blur — that's reversible), then a second-pass OCR re-verify *refuses* if any readable text survives. Strict fill-all, all adapters (Claude / OpenAI Chat & Responses incl. computer-use screenshots / Gemini); PDFs & audio still fail closed.
+- 🖼️ **Image redaction (opt-in, macOS).** By default images fail closed (refused). Set `REDACT_IMAGES=1` on macOS to redact them on-device with **Apple Vision**: every text region + face is covered with a **solid opaque box** (never blur — that's reversible), then a second-pass OCR re-verify *refuses* if any readable text survives. Strict fill-all, all adapters (Claude / OpenAI Chat & Responses incl. computer-use screenshots / Gemini). **PDFs** are redactable too (`REDACT_PDF`, Claude — each page rasterized → redacted → re-verified, dropping the text layer); audio still fails closed.
 - 🗣️ **Say what to hide.** Add rules in plain language via slash commands — `/redact add …`.
 - 🚧 **Fail-closed by design.** If the proxy isn't in the path, the tool refuses rather than leaking.
 
@@ -104,6 +104,7 @@ that stands the proxy up and **fails closed** if the route isn't active.
 | Image / binary attachments — fail-closed refusal | ✅ Done |
 | Image redaction — fail-closed refusal (all platforms) | ✅ Done |
 | Image redaction — Apple Vision opaque-fill + re-verify (opt-in, macOS, all adapters) | ✅ v1.1 |
+| PDF redaction — rasterize → opaque-fill → re-verify → reflatten (opt-in, macOS, Claude) | ✅ v1 |
 | Gemini / Copilot adapters + launchers | 🔨 Planned |
 
 ### Supported tools
