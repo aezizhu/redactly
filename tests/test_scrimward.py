@@ -804,6 +804,35 @@ def test_anthropic_unmask_reassembles_at_every_split():
         assert token not in result, f"token leaked at split {cut}"
 
 
+def test_anthropic_unmask_input_json_delta_tool_args():
+    # H2: tool_use.input streamed via input_json_delta must be un-masked so the
+    # LOCAL tool receives the real value, not the «TOKEN» placeholder.
+    v = Vault("s")
+    token = v.token_for("ops@example.com", "EMAIL")
+    half = len(token) // 2
+
+    async def src():
+        yield (
+            'data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":%s}}\n\n'
+            % json.dumps('{"to":"' + token[:half])
+        ).encode()
+        yield (
+            'data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":%s}}\n\n'
+            % json.dumps(token[half:] + '"}')
+        ).encode()
+        yield b'data: {"type":"message_stop"}\n\n'
+
+    async def collect():
+        out = b""
+        async for c in AnthropicAdapter().unmask_stream(src(), v):
+            out += c
+        return out.decode("utf-8")
+
+    result = _run(collect())
+    assert "ops@example.com" in result
+    assert token not in result
+
+
 def test_openai_chat_unmask_split_token():
     v = Vault("s")
     token = v.token_for("secret@example.com", "EMAIL")

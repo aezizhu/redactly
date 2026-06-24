@@ -395,13 +395,18 @@ class AnthropicAdapter:
 
         etype = obj.get("type") if isinstance(obj, dict) else None
 
-        # --- content_block_delta with a text_delta → un-mask its text ---
+        # --- content_block_delta → un-mask its text OR tool-call JSON ---
+        # text_delta carries reply text; input_json_delta streams the model's
+        # tool_use.input — which can echo a masked token that the LOCAL tool
+        # (file writer / shell / send_email) must receive RESTORED, not «TOKEN».
         if etype == "content_block_delta" and isinstance(obj.get("delta"), dict):
             delta = obj["delta"]
-            if delta.get("type") == "text_delta" and isinstance(delta.get("text"), str):
-                combined = token_carry + delta["text"]
+            dtype = delta.get("type")
+            field = "text" if dtype == "text_delta" else "partial_json" if dtype == "input_json_delta" else None
+            if field is not None and isinstance(delta.get(field), str):
+                combined = token_carry + delta[field]
                 safe, new_carry = _split_unmaskable(combined)
-                delta["text"] = vault.unmask(safe)
+                delta[field] = vault.unmask(safe)
                 out = self._reserialize(event_name, obj, terminator)
                 return out, new_carry
             return passthrough, token_carry
