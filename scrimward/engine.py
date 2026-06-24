@@ -28,9 +28,11 @@ from .detectors import BUILTINS, Detector, Span, detect
 from .vault import Vault
 
 
-# Dict keys whose ``data`` child is raw binary base64 (image/file), not text —
-# the recursive backstop must not run text redaction over them.
-_IMAGE_PARENTS = frozenset({"source", "inlinedata", "inline_data"})
+# A REAL base64 binary data URI (image/pdf/audio): data:<type>/<subtype>[;k=v]*;base64,…
+# Crucially this does NOT match data:, or data:text/…, which carry redactable text.
+_BINARY_DATA_URI = re.compile(r"^data:[\w.+-]+/[\w.+-]+(?:;[\w.+-]+=[^;,]+)*;base64,", re.IGNORECASE)
+# Sibling keys (case-folded) that mark a dict as a binary attachment block.
+_MIME_KEYS = frozenset({"media_type", "mimetype", "mime_type"})
 
 
 @dataclass(frozen=True)
@@ -173,32 +175,47 @@ class Redactor:
         mutated): inline ``data:`` URIs, raw image base64 (``data`` under
         ``source``/``inlineData``), and ``encrypted_content`` server blobs.
         """
-        return self._redact_node(obj, key=None, parent_key=None)
+        return self._redact_node(obj)
 
-    def _is_opaque(self, value: str, key: str | None, parent_key: str | None) -> bool:
-        if value[:5].lower() == "data:":  # any inline image/pdf/audio data URI
-            return True
-        if isinstance(key, str):
-            kl = key.lower()
-            if kl == "encrypted_content":
-                return True
-            if kl == "data" and parent_key in _IMAGE_PARENTS:
-                return True
-        return False
-
-    def _redact_node(self, node: object, key: str | None, parent_key: str | None) -> object:
-        if isinstance(node, str):
-            return node if self._is_opaque(node, key, parent_key) else self.redact_text(node)
+    def _redact_node(self, node: object) -> object:
         if isinstance(node, dict):
-            node_key = key.lower() if isinstance(key, str) else None
             for k in list(node.keys()):
-                node[k] = self._redact_node(node[k], k if isinstance(k, str) else None, node_key)
+                v = node[k]
+                if isinstance(v, str):
+                    if not self._is_opaque(node, k, v):
+                        node[k] = self.redact_text(v)
+                    # else: a structurally-confirmed binary/opaque leaf — leave it
+                else:
+                    node[k] = self._redact_node(v)
             return node
         if isinstance(node, list):
             for i in range(len(node)):
-                node[i] = self._redact_node(node[i], None, parent_key)
+                v = node[i]
+                node[i] = self.redact_text(v) if isinstance(v, str) else self._redact_node(v)
             return node
+        if isinstance(node, str):
+            return self.redact_text(node)  # bare top-level string (no key context)
         return node  # int / float / bool / None — nothing to redact
+
+    def _is_opaque(self, parent: dict, key: object, value: str) -> bool:
+        """True ONLY with positive structural evidence that ``value`` is binary /
+        opaque content the text engine must not touch — never a bare key name or
+        value prefix (both are attacker/model-placeable). Without this, a secret
+        in an un-enumerated field — where this sweep is the SOLE guard — could be
+        skipped via a ``data:`` prefix or a ``data``/``encrypted_content`` key.
+        """
+        if _BINARY_DATA_URI.match(value):  # a real base64 image/pdf/audio data URI
+            return True
+        kl = key.lower() if isinstance(key, str) else ""
+        if kl == "data":
+            # raw base64 image/file payload — only when a SIBLING marks it binary
+            if str(parent.get("type", "")).lower() == "base64":  # Anthropic source.data
+                return True
+            siblings = {k.lower() for k in parent if isinstance(k, str)}
+            return any(m in siblings for m in _MIME_KEYS)  # Gemini inlineData.data
+        if kl == "encrypted_content":  # opaque server blob — only inside a reasoning item
+            return str(parent.get("type", "")).lower() == "reasoning"
+        return False
 
     @staticmethod
     def _normalize(s: str) -> str:

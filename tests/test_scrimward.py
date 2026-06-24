@@ -226,19 +226,40 @@ def test_redact_object_redacts_nested_text_but_keeps_non_secrets():
 
 
 def test_redact_object_preserves_opaque_binary_and_encrypted_fields():
-    # The backstop must NOT corrupt image data, data URIs, or opaque server blobs.
-    red = Redactor(Vault("s"), detect_entropy=True)  # entropy on = harshest case
+    # The backstop must NOT corrupt a STRUCTURALLY-REAL image data / data URI /
+    # encrypted reasoning blob (entropy on = harshest: it would mask the base64).
+    red = Redactor(Vault("s"), detect_entropy=True)
     obj = {
-        "source": {"type": "base64", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"},
+        "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"},
         "inlineData": {"mimeType": "image/png", "data": "iVBORw0KGgoAAAANSUhEUg"},
         "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANS"},
-        "reasoning": {"encrypted_content": "OPAQUEsk0123456789abcdefBLOBxyz"},
+        "reasoning": {"type": "reasoning", "encrypted_content": "OPAQUEsk0123456789abcdefBLOBxyz"},
     }
     red.redact_object(obj)
     assert obj["source"]["data"] == "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
     assert obj["inlineData"]["data"] == "iVBORw0KGgoAAAANSUhEUg"
     assert obj["image_url"]["url"] == "data:image/png;base64,iVBORw0KGgoAAAANS"
     assert obj["reasoning"]["encrypted_content"] == "OPAQUEsk0123456789abcdefBLOBxyz"
+
+
+def test_backstop_rejects_spoofed_opaque_fields():
+    # The verification re-audit's bypasses: a secret must NOT escape the backstop
+    # via a bare data:-prefix, a data:text URI, or a `data`/`encrypted_content`
+    # key name WITHOUT the real binary structure (sibling type:base64 / mime /
+    # reasoning item). Each of these is the SOLE guard for an un-enumerated field.
+    red = Redactor(Vault("s"))
+    secret = _j("AKIA", "IOSFODNN7EXAMPLE")
+    spoofs = [
+        {"note": f"data:,{secret}"},
+        {"note": f"data:text/plain,my key is {secret}"},
+        {"source": {"data": secret}},  # `source` parent but no type:base64
+        {"inline_data": {"data": secret}},  # no mimeType sibling
+        {"encrypted_content": secret},  # key name, not a reasoning item
+        {"tool_use": {"input": {"source": {"data": secret}}}},  # nested via a tool arg
+    ]
+    for obj in spoofs:
+        red.redact_object(obj)
+        assert secret not in json.dumps(obj), f"leaked via spoof: {obj}"
 
 
 def test_anthropic_redacts_tool_use_input_args():
