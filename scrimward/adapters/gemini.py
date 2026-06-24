@@ -21,10 +21,12 @@ shared with the Anthropic adapter.
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import AsyncIterator, Mapping
 
 from ..engine import Redactor
+from ..image_redactor import ImageRedactionError, image_redaction_available, redact_image_bytes
 from ..vault import Vault
 from .anthropic import _find_sse_event_terminator, _parse_sse_event, _split_unmaskable
 from .base import AttachmentRedactionUnsupported
@@ -89,15 +91,44 @@ class GeminiAdapter:
                     if not isinstance(part, dict):
                         continue
                     if _is_binary_attachment_part(part):
-                        raise AttachmentRedactionUnsupported(
-                            "gemini: request contains an inline/file binary part "
-                            "(image/document/audio), which cannot be redacted "
-                            "yet — refusing to forward it (fail-closed)"
-                        )
-                    if isinstance(part.get("text"), str):
+                        self._redact_binary_part(part, red)
+                    elif isinstance(part.get("text"), str):
                         part["text"] = red.redact_text(part["text"])
             return obj
         return obj
+
+    def _redact_binary_part(self, part: dict, red: Redactor) -> None:
+        """Redact an inline base64 IMAGE part in place, or fail closed.
+
+        Only ``inlineData`` (base64) with an ``image/*`` MIME is redactable;
+        ``fileData`` (a URI we can't fetch) and non-image inline blobs (PDF /
+        audio) always fail closed.
+        """
+        blob = None
+        for key in ("inlineData", "inline_data"):
+            if isinstance(part.get(key), dict):
+                blob = part[key]
+                break
+        mime = (blob.get("mimeType") or blob.get("mime_type") or "") if blob else ""
+        if not (blob and isinstance(mime, str) and mime.lower().startswith("image/")):
+            raise AttachmentRedactionUnsupported(
+                "gemini: request contains a non-image or URI binary part, which "
+                "cannot be redacted — refusing to forward it (fail-closed)"
+            )
+        if not (red.redact_images and image_redaction_available()):
+            raise AttachmentRedactionUnsupported(
+                "gemini: request contains an inline image and image redaction is "
+                "off/unavailable — refusing to forward it (fail-closed)"
+            )
+        try:
+            raw = base64.b64decode(blob.get("data", ""), validate=True)
+            redacted = redact_image_bytes(raw, mime)
+        except (ImageRedactionError, ValueError, TypeError) as exc:
+            raise AttachmentRedactionUnsupported(
+                f"gemini: image could not be safely redacted ({exc}) — refusing "
+                "to forward it (fail-closed)"
+            ) from exc
+        blob["data"] = base64.b64encode(redacted).decode("ascii")
 
     async def unmask_stream(
         self, aiter_bytes: AsyncIterator[bytes], vault: Vault

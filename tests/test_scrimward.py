@@ -720,6 +720,55 @@ def test_anthropic_redacts_image_when_enabled():
     assert _detect_boxes(vision, nsdata, base64.b64decode(new_b64)) == []
 
 
+def _no_text_remains(raw: bytes) -> bool:
+    from scrimward.image_redactor import _detect_boxes, _stack
+
+    vision, nsdata, _img, _draw = _stack()
+    return _detect_boxes(vision, nsdata, raw) == []
+
+
+@pytest.mark.skipif(not _VISION, reason="Apple Vision unavailable (non-macOS)")
+def test_openai_chat_redacts_image_when_enabled():
+    import base64
+
+    uri = "data:image/png;base64," + base64.b64encode(_text_png("SECRET AKIAIOSFODNN7EXAMPLE")).decode()
+    body = json.dumps(
+        {"model": "gpt-4o", "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": uri}}]}]}
+    ).encode()
+    out = OpenAIChatAdapter().redact_request(body, Redactor(Vault("s"), redact_images=True))
+    new_uri = json.loads(out)["messages"][0]["content"][0]["image_url"]["url"]
+    assert new_uri != uri
+    assert _no_text_remains(base64.b64decode(new_uri.split(",", 1)[1]))
+
+
+@pytest.mark.skipif(not _VISION, reason="Apple Vision unavailable (non-macOS)")
+def test_openai_responses_redacts_input_image_when_enabled():
+    import base64
+
+    uri = "data:image/png;base64," + base64.b64encode(_text_png("SECRET AKIAIOSFODNN7EXAMPLE")).decode()
+    body = json.dumps(
+        {"model": "gpt-5", "input": [{"type": "message", "role": "user", "content": [{"type": "input_image", "image_url": uri}]}]}
+    ).encode()
+    out = OpenAIResponsesAdapter().redact_request(body, Redactor(Vault("s"), redact_images=True))
+    new_uri = json.loads(out)["input"][0]["content"][0]["image_url"]
+    assert new_uri != uri
+    assert _no_text_remains(base64.b64decode(new_uri.split(",", 1)[1]))
+
+
+@pytest.mark.skipif(not _VISION, reason="Apple Vision unavailable (non-macOS)")
+def test_gemini_redacts_inline_image_when_enabled():
+    import base64
+
+    b64 = base64.b64encode(_text_png("SECRET AKIAIOSFODNN7EXAMPLE")).decode()
+    body = json.dumps(
+        {"contents": [{"role": "user", "parts": [{"inlineData": {"mimeType": "image/png", "data": b64}}]}]}
+    ).encode()
+    out = GeminiAdapter().redact_request(body, Redactor(Vault("s"), redact_images=True))
+    new_b64 = json.loads(out)["contents"][0]["parts"][0]["inlineData"]["data"]
+    assert new_b64 != b64
+    assert _no_text_remains(base64.b64decode(new_b64))
+
+
 @pytest.mark.skipif(not _VISION, reason="Apple Vision unavailable (non-macOS)")
 def test_image_redactor_refuses_when_fill_misses(monkeypatch):
     # Force a fill MISS — every box drawn as a 0-area rect — and prove the

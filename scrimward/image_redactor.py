@@ -24,8 +24,14 @@ tolerate that residual risk should keep images failing closed.
 
 from __future__ import annotations
 
+import base64
 import functools
 import io
+import re
+
+# Inline image data URI: data:image/png;base64,<...>. Anything else (a remote
+# http(s) URL, a non-image MIME) is not locally redactable → the caller fails closed.
+_DATA_URI_RE = re.compile(r"^data:(?P<mime>image/[A-Za-z0-9.+-]+);base64,(?P<data>.+)$", re.DOTALL)
 
 # Pad each fill box by this fraction of its size (OCR clips glyph edges + anti-alias).
 _PAD = 0.10
@@ -151,3 +157,21 @@ def redact_image_bytes(raw: bytes, media_type: str) -> bytes:
             "text or a face survived redaction; refusing to forward (fail-closed)"
         )
     return redacted
+
+
+def redact_data_uri(uri: str) -> str:
+    """Redact an inline ``data:image/...;base64,...`` URI → a new data URI.
+
+    Raises :class:`ImageRedactionError` when ``uri`` is not an inline base64
+    image data URI (e.g. a remote URL) or when redaction fails — so the calling
+    adapter fails closed.
+    """
+    match = _DATA_URI_RE.match(uri or "")
+    if match is None:
+        raise ImageRedactionError("not an inline base64 image data URI")
+    try:
+        raw = base64.b64decode(match.group("data"), validate=True)
+    except (ValueError, TypeError) as exc:
+        raise ImageRedactionError(f"data URI base64 is invalid: {exc}") from exc
+    redacted = redact_image_bytes(raw, match.group("mime"))
+    return f"data:{match.group('mime')};base64,{base64.b64encode(redacted).decode('ascii')}"

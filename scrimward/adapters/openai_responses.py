@@ -30,6 +30,7 @@ from collections.abc import AsyncIterator, Mapping
 from ..engine import Redactor
 from ..vault import Vault
 from .anthropic import _find_sse_event_terminator, _parse_sse_event, _split_unmaskable
+from ..image_redactor import ImageRedactionError, image_redaction_available, redact_data_uri
 from .base import AttachmentRedactionUnsupported
 
 RESPONSES_PATH = "/v1/responses"
@@ -72,15 +73,10 @@ class OpenAIResponsesAdapter:
         if not isinstance(item, dict):
             return
         itype = item.get("type")
-        # computer_call_output carries a screenshot of the user's screen — an
-        # image we cannot redact yet. Forwarding it is exactly the "pasted
-        # image leaks" hole, so fail closed rather than send it.
+        # computer_call_output carries a screenshot of the user's screen — redact
+        # it (or fail closed); forwarding it raw is the "pasted image leaks" hole.
         if itype == "computer_call_output":
-            raise AttachmentRedactionUnsupported(
-                "openai_responses: request contains a computer_call_output "
-                "screenshot, which cannot be redacted yet — refusing to "
-                "forward it (fail-closed)"
-            )
+            self._redact_screenshot(item, red)
         # message content (str or list of {type, text} parts)
         content = item.get("content")
         if isinstance(content, str):
@@ -89,23 +85,54 @@ class OpenAIResponsesAdapter:
             for part in content:
                 if not isinstance(part, dict):
                     continue
-                # input_image / input_file parts are un-redactable binary
-                # attachments → fail closed.
-                if part.get("type") in ("input_image", "input_file"):
+                ptype = part.get("type")
+                if ptype == "input_image":  # inline data URI → redact or fail closed
+                    self._redact_input_image(part, red)
+                    continue
+                if ptype == "input_file":  # un-redactable file → fail closed
                     raise AttachmentRedactionUnsupported(
-                        f"openai_responses: message contains a {part.get('type')} "
-                        "part, which cannot be redacted yet — refusing to "
-                        "forward it (fail-closed)"
+                        "openai_responses: message contains an input_file part, "
+                        "which cannot be redacted yet — refusing to forward it (fail-closed)"
                     )
-                if (
-                    isinstance(part.get("text"), str)
-                    and part.get("type", "input_text") in _TEXT_PART_TYPES
-                ):
+                if isinstance(part.get("text"), str) and part.get("type", "input_text") in _TEXT_PART_TYPES:
                     part["text"] = red.redact_text(part["text"])
         # tool-output strings (shell stdout / patches) — high secret density.
         if itype in _TOOL_OUTPUT_TYPES and isinstance(item.get("output"), str):
             item["output"] = red.redact_text(item["output"])
         # reasoning.encrypted_content: opaque server blob, forwarded untouched.
+
+    def _redact_input_image(self, part: dict, red: Redactor) -> None:
+        """Redact an ``input_image`` part's inline data URI in place, or fail closed."""
+        if not (red.redact_images and image_redaction_available()):
+            raise AttachmentRedactionUnsupported(
+                "openai_responses: message contains an input_image part and image "
+                "redaction is off/unavailable — refusing to forward it (fail-closed)"
+            )
+        try:
+            part["image_url"] = redact_data_uri(part.get("image_url"))
+        except (ImageRedactionError, TypeError) as exc:
+            raise AttachmentRedactionUnsupported(
+                f"openai_responses: image could not be safely redacted ({exc}) — "
+                "refusing to forward it (fail-closed)"
+            ) from exc
+
+    def _redact_screenshot(self, item: dict, red: Redactor) -> None:
+        """Redact a ``computer_call_output`` screenshot data URI in place, or fail closed."""
+        if not (red.redact_images and image_redaction_available()):
+            raise AttachmentRedactionUnsupported(
+                "openai_responses: request contains a computer_call_output screenshot "
+                "and image redaction is off/unavailable — refusing to forward it (fail-closed)"
+            )
+        output = item.get("output")
+        try:
+            output["image_url"] = redact_data_uri(
+                output.get("image_url") if isinstance(output, dict) else None
+            )
+        except (ImageRedactionError, AttributeError, TypeError) as exc:
+            raise AttachmentRedactionUnsupported(
+                f"openai_responses: screenshot could not be safely redacted ({exc}) — "
+                "refusing to forward it (fail-closed)"
+            ) from exc
 
     async def unmask_stream(
         self, aiter_bytes: AsyncIterator[bytes], vault: Vault

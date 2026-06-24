@@ -24,11 +24,12 @@ from .anthropic import (
     _parse_sse_event,
     _split_unmaskable,
 )
+from ..image_redactor import ImageRedactionError, image_redaction_available, redact_data_uri
 from .base import AttachmentRedactionUnsupported
 
-# Content-part types that carry un-redactable binary attachments (image / audio
-# / file) — the engine is text-only, so any of these must fail closed.
-_BINARY_PART_TYPES = frozenset({"image_url", "input_audio", "file"})
+# Un-redactable binary attachment part types — the engine is text-only, so these
+# fail closed. (image_url is handled separately: redacted when enabled.)
+_BINARY_PART_TYPES = frozenset({"input_audio", "file"})
 
 CHAT_COMPLETIONS_PATH = "/v1/chat/completions"
 
@@ -82,18 +83,34 @@ class OpenAIChatAdapter:
                 if not isinstance(part, dict):
                     continue
                 ptype = part.get("type")
-                # image_url / input_audio / file parts are un-redactable binary
-                # attachments → fail closed rather than forward them.
-                if ptype in _BINARY_PART_TYPES:
+                if ptype == "image_url":
+                    self._redact_image_url(part, red)
+                elif ptype in _BINARY_PART_TYPES:  # input_audio / file → fail closed
                     raise AttachmentRedactionUnsupported(
                         f"openai_chat: message contains a {ptype} part, which "
                         "cannot be redacted yet — refusing to forward it (fail-closed)"
                     )
-                if ptype == "text" and isinstance(part.get("text"), str):
+                elif ptype == "text" and isinstance(part.get("text"), str):
                     part["text"] = red.redact_text(part["text"])
             return content
         # null content (assistant tool-call messages) — nothing to redact.
         return content
+
+    def _redact_image_url(self, part: dict, red: Redactor) -> None:
+        """Redact an ``image_url`` part's inline data URI in place, or fail closed."""
+        if not (red.redact_images and image_redaction_available()):
+            raise AttachmentRedactionUnsupported(
+                "openai_chat: message contains an image_url part and image "
+                "redaction is off/unavailable — refusing to forward it (fail-closed)"
+            )
+        img = part.get("image_url")
+        try:
+            img["url"] = redact_data_uri(img.get("url") if isinstance(img, dict) else None)
+        except (ImageRedactionError, AttributeError, TypeError) as exc:
+            raise AttachmentRedactionUnsupported(
+                f"openai_chat: image could not be safely redacted ({exc}) — "
+                "refusing to forward it (fail-closed)"
+            ) from exc
 
     async def unmask_stream(
         self, aiter_bytes: AsyncIterator[bytes], vault: Vault
