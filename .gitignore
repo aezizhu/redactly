@@ -1,6 +1,7 @@
-# Build output
+# Build output (compiled binaries) — but keep the committed shell shim.
 /bin/*
 !/bin/.gitkeep
+!/bin/scrimward-py
 dist/
 build/
 *.o

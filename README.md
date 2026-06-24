@@ -100,6 +100,7 @@ that stands the proxy up and **fails closed** if the route isn't active.
 | Local proxy (streaming, fail-closed) | ✅ Done — 10/10 tests |
 | Adapters: Anthropic, OpenAI-Chat, OpenAI-Responses | ✅ Done |
 | **Claude Code plugin** (slash commands + fail-closed guard hook) | ✅ Done |
+| Go PreToolUse guard — single static binary, ~10× faster, golden-parity tested vs Python (`make guard`; auto-fallback to Python) | ✅ v1 |
 | Launchers: `wrap claude` + `wrap codex` | ✅ Done (Codex: API-key mode) |
 | Image / binary attachments — fail-closed refusal | ✅ Done |
 | Image redaction — fail-closed refusal (all platforms) | ✅ Done |

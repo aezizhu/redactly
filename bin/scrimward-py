@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Scrimward hook/command shim.
+#
+# Runs `python -m scrimward.cli "$@"` with the scrimward package importable,
+# preferring the repo's virtualenv, regardless of the caller's working
+# directory. Used by hooks/hooks.json and the slash commands via
+# ${CLAUDE_PLUGIN_ROOT}/bin/scrimward-py.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Fast path: the PreToolUse guard runs on EVERY tool use. When the compiled Go
+# guard is present, use it — it starts in single-digit ms (vs Python+click
+# cold-start) and needs no interpreter. It is golden-parity-tested against the
+# Python guard; if it is not built, we fall through to Python below.
+if [ "${1:-}" = "hook" ] && [ "${2:-}" = "guard" ] && [ -x "$HERE/bin/scrimward-guard" ]; then
+  exec "$HERE/bin/scrimward-guard" "${@:3}"
+fi
+
+PY="$HERE/.venv/bin/python"
+if [ ! -x "$PY" ]; then
+  PY="$(command -v python3 || true)"
+fi
+if [ -z "${PY:-}" ]; then
+  # No interpreter — don't brick the session (this is an install/env issue,
+  # not a routing failure). The real fail-closed guard runs only when we can.
+  echo "scrimward: no python interpreter found; run the installer first" >&2
+  exit 0
+fi
+
+exec env PYTHONPATH="${HERE}${PYTHONPATH:+:$PYTHONPATH}" "$PY" -m scrimward.cli "$@"
