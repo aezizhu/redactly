@@ -271,6 +271,7 @@ class AnthropicAdapter:
                 "refusing to forward it (fail-closed)"
             ) from exc
         source["data"] = base64.b64encode(redacted).decode("ascii")
+        red.mark_opaque(source["data"])  # provenance: backstop must not re-scan it
         return block
 
     def _redact_document_block(self, block: dict, red: Redactor) -> dict:
@@ -304,6 +305,7 @@ class AnthropicAdapter:
                 "to forward it (fail-closed)"
             ) from exc
         source["data"] = base64.b64encode(redacted).decode("ascii")
+        red.mark_opaque(source["data"])  # provenance: backstop must not re-scan it
         return block
 
     async def unmask_stream(

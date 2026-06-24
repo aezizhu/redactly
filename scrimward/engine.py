@@ -28,13 +28,6 @@ from .detectors import BUILTINS, Detector, Span, detect
 from .vault import Vault
 
 
-# A REAL base64 binary data URI (image/pdf/audio): data:<type>/<subtype>[;k=v]*;base64,…
-# Crucially this does NOT match data:, or data:text/…, which carry redactable text.
-_BINARY_DATA_URI = re.compile(r"^data:[\w.+-]+/[\w.+-]+(?:;[\w.+-]+=[^;,]+)*;base64,", re.IGNORECASE)
-# Sibling keys (case-folded) that mark a dict as a binary attachment block.
-_MIME_KEYS = frozenset({"media_type", "mimetype", "mime_type"})
-
-
 @dataclass(frozen=True)
 class _RankedSpan:
     """A detected :class:`Span` tagged with its resolution priority.
@@ -120,6 +113,14 @@ class Redactor:
         self._allow_literals: frozenset[str] = self.allowlist.literals
         self._allow_hashes: frozenset[str] = self.allowlist.hashes
 
+        # Provenance set for the deny-by-default backstop: sha256 of every binary/
+        # opaque value an adapter PRODUCED (a redacted image/PDF blob) or recognized
+        # at its known structural path (a reasoning item's encrypted_content). The
+        # backstop skips a string leaf ONLY if its hash is in here — never on a
+        # value prefix or an in-band sibling key, both of which an attacker/model
+        # can forge in an un-enumerated subtree where the backstop is the SOLE guard.
+        self._opaque_hashes: set[str] = set()
+
     def redact_text(self, s: str) -> str:
         """Return ``s`` with every detected secret replaced by a stable token.
 
@@ -163,38 +164,62 @@ class Redactor:
 
         return self._splice(norm, spans)
 
+    def mark_opaque(self, value: object) -> None:
+        """Register ``value`` as a binary/opaque leaf the backstop must NOT touch.
+
+        Called by an adapter for every blob it PRODUCED (a redacted image/PDF data
+        URI or base64) or recognized at its known structural path (a reasoning
+        item's ``encrypted_content``). The backstop skips a leaf only when its
+        exact bytes were registered here — provenance, the one axis an attacker
+        cannot forge in an un-enumerated subtree. A missed registration merely
+        re-scans (fails SAFE); a forged copy is never registered, so it is masked.
+        """
+        if isinstance(value, str):
+            self._opaque_hashes.add(hashlib.sha256(value.encode("utf-8")).hexdigest())
+
     def redact_object(self, obj: object) -> object:
-        """Deny-by-default recursive backstop: redact EVERY string leaf in a
-        JSON-decoded object IN PLACE, except opaque/binary fields.
+        """Deny-by-default recursive backstop: redact EVERY string leaf — KEYS
+        included — in a JSON-decoded object IN PLACE, except provenance-marked
+        opaque blobs.
 
         Adapters can only hand-enumerate the text fields they know about; a field
-        a provider adds tomorrow (a new tool-call arg, a description, metadata)
-        would otherwise be re-serialized verbatim and leak. This sweep masks any
-        un-enumerated text so the adapter layer is fail-CLOSED by construction.
-        Opaque fields are skipped (they are handled separately or must not be
-        mutated): inline ``data:`` URIs, raw image base64 (``data`` under
-        ``source``/``inlineData``), and ``encrypted_content`` server blobs.
+        a provider adds tomorrow (a new tool-call arg, a description, metadata, or
+        a dict keyed BY a secret) would otherwise be re-serialized verbatim and
+        leak. This sweep masks any un-enumerated text so the adapter layer is
+        fail-CLOSED by construction. The ONLY skip is :meth:`mark_opaque`
+        provenance — never a value prefix or in-band sibling, both forgeable.
         """
         return self._redact_node(obj)
 
     def _redact_node(self, node: object) -> object:
         if isinstance(node, dict):
+            # Walk KEYS as well as values: a secret/PII used as an object key
+            # (an AWS export keyed by access-key-id, a CRM keyed by email) is a
+            # string leaf on the wire. Rebuild in place so order is preserved and
+            # the (rare) case of two keys colliding to one token can't drop data
+            # silently — redact_text leaves non-secret field names unchanged.
+            rebuilt = {}
             for k in list(node.keys()):
                 v = node[k]
                 if isinstance(v, str):
-                    if not self._is_opaque(node, k, v):
-                        node[k] = self.redact_text(v)
-                    # else: a structurally-confirmed binary/opaque leaf — leave it
+                    nv = v if self._is_opaque(v) else self.redact_text(v)
                 else:
-                    node[k] = self._redact_node(v)
+                    nv = self._redact_node(v)
+                nk = self.redact_text(k) if isinstance(k, str) else k
+                rebuilt[nk] = nv
+            node.clear()
+            node.update(rebuilt)
             return node
         if isinstance(node, list):
             for i in range(len(node)):
                 v = node[i]
-                node[i] = self.redact_text(v) if isinstance(v, str) else self._redact_node(v)
+                if isinstance(v, str):
+                    node[i] = v if self._is_opaque(v) else self.redact_text(v)
+                else:
+                    node[i] = self._redact_node(v)
             return node
         if isinstance(node, str):
-            return self.redact_text(node)  # bare top-level string (no key context)
+            return node if self._is_opaque(node) else self.redact_text(node)
         if isinstance(node, bool):
             return node  # bool is an int subclass but is never a secret
         if isinstance(node, int):
@@ -206,25 +231,15 @@ class Redactor:
             return masked if masked != text else node
         return node  # float / None — nothing to redact
 
-    def _is_opaque(self, parent: dict, key: object, value: str) -> bool:
-        """True ONLY with positive structural evidence that ``value`` is binary /
-        opaque content the text engine must not touch — never a bare key name or
-        value prefix (both are attacker/model-placeable). Without this, a secret
-        in an un-enumerated field — where this sweep is the SOLE guard — could be
-        skipped via a ``data:`` prefix or a ``data``/``encrypted_content`` key.
+    def _is_opaque(self, value: str) -> bool:
+        """True ONLY when ``value``'s exact bytes were registered via
+        :meth:`mark_opaque` (adapter provenance). Never keys on a value prefix or
+        an in-band sibling — both are attacker/model-placeable in an un-enumerated
+        subtree where this sweep is the SOLE guard, so trusting them would let a
+        secret escape as ``data:…;base64,<plaintext>`` or under a forged
+        ``type:base64`` sibling.
         """
-        if _BINARY_DATA_URI.match(value):  # a real base64 image/pdf/audio data URI
-            return True
-        kl = key.lower() if isinstance(key, str) else ""
-        if kl == "data":
-            # raw base64 image/file payload — only when a SIBLING marks it binary
-            if str(parent.get("type", "")).lower() == "base64":  # Anthropic source.data
-                return True
-            siblings = {k.lower() for k in parent if isinstance(k, str)}
-            return any(m in siblings for m in _MIME_KEYS)  # Gemini inlineData.data
-        if kl == "encrypted_content":  # opaque server blob — only inside a reasoning item
-            return str(parent.get("type", "")).lower() == "reasoning"
-        return False
+        return hashlib.sha256(value.encode("utf-8")).hexdigest() in self._opaque_hashes
 
     @staticmethod
     def _normalize(s: str) -> str:

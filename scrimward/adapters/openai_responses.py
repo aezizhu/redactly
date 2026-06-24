@@ -105,7 +105,12 @@ class OpenAIResponsesAdapter:
         # tool-output strings (shell stdout / patches) — high secret density.
         if itype in _TOOL_OUTPUT_TYPES and isinstance(item.get("output"), str):
             item["output"] = red.redact_text(item["output"])
-        # reasoning.encrypted_content: opaque server blob, forwarded untouched.
+        # reasoning.encrypted_content: an opaque server-signed blob (mutating it
+        # breaks the turn). Mark it opaque by PROVENANCE at its known path only, so
+        # the backstop preserves it here but still redacts a forged copy planted in
+        # any un-enumerated field.
+        if itype == "reasoning" and isinstance(item.get("encrypted_content"), str):
+            red.mark_opaque(item["encrypted_content"])
 
     def _redact_input_image(self, part: dict, red: Redactor) -> None:
         """Redact an ``input_image`` part's inline data URI in place, or fail closed."""
@@ -116,6 +121,7 @@ class OpenAIResponsesAdapter:
             )
         try:
             part["image_url"] = redact_data_uri(part.get("image_url"))
+            red.mark_opaque(part["image_url"])  # provenance: backstop must not re-scan it
         except (ImageRedactionError, TypeError) as exc:
             raise AttachmentRedactionUnsupported(
                 f"openai_responses: image could not be safely redacted ({exc}) — "
@@ -131,6 +137,7 @@ class OpenAIResponsesAdapter:
             )
         try:
             part["file_data"] = redact_pdf_data_uri(part.get("file_data"))
+            red.mark_opaque(part["file_data"])  # provenance: backstop must not re-scan it
         except (ImageRedactionError, TypeError) as exc:
             raise AttachmentRedactionUnsupported(
                 f"openai_responses: file could not be safely redacted ({exc}) — "
@@ -149,6 +156,7 @@ class OpenAIResponsesAdapter:
             output["image_url"] = redact_data_uri(
                 output.get("image_url") if isinstance(output, dict) else None
             )
+            red.mark_opaque(output["image_url"])  # provenance: backstop must not re-scan it
         except (ImageRedactionError, AttributeError, TypeError) as exc:
             raise AttachmentRedactionUnsupported(
                 f"openai_responses: screenshot could not be safely redacted ({exc}) — "

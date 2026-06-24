@@ -142,6 +142,7 @@ class GeminiAdapter:
                 "refusing to forward it (fail-closed)"
             ) from exc
         blob["data"] = base64.b64encode(redacted).decode("ascii")
+        red.mark_opaque(blob["data"])  # provenance: backstop must not re-scan it
 
     async def unmask_stream(
         self, aiter_bytes: AsyncIterator[bytes], vault: Vault

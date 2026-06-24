@@ -225,21 +225,21 @@ def test_redact_object_redacts_nested_text_but_keeps_non_secrets():
     assert obj["model"] == "gpt-4o"  # non-secret text preserved
 
 
-def test_redact_object_preserves_opaque_binary_and_encrypted_fields():
-    # The backstop must NOT corrupt a STRUCTURALLY-REAL image data / data URI /
-    # encrypted reasoning blob (entropy on = harshest: it would mask the base64).
+def test_redact_object_preserves_marked_opaque_blobs():
+    # The backstop must NOT corrupt a real binary blob the adapter PRODUCED —
+    # but only when it was registered via mark_opaque (provenance, not value
+    # shape). Entropy on = harshest: it would otherwise mask the base64.
     red = Redactor(Vault("s"), detect_entropy=True)
+    blobs = ["iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB", "data:image/png;base64,iVBORw0KGgoAAAANS"]
+    for b in blobs:
+        red.mark_opaque(b)
     obj = {
-        "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"},
-        "inlineData": {"mimeType": "image/png", "data": "iVBORw0KGgoAAAANSUhEUg"},
-        "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANS"},
-        "reasoning": {"type": "reasoning", "encrypted_content": "OPAQUEsk0123456789abcdefBLOBxyz"},
+        "source": {"type": "base64", "media_type": "image/png", "data": blobs[0]},
+        "image_url": {"url": blobs[1]},
     }
     red.redact_object(obj)
-    assert obj["source"]["data"] == "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
-    assert obj["inlineData"]["data"] == "iVBORw0KGgoAAAANSUhEUg"
-    assert obj["image_url"]["url"] == "data:image/png;base64,iVBORw0KGgoAAAANS"
-    assert obj["reasoning"]["encrypted_content"] == "OPAQUEsk0123456789abcdefBLOBxyz"
+    assert obj["source"]["data"] == blobs[0]
+    assert obj["image_url"]["url"] == blobs[1]
 
 
 def test_backstop_rejects_spoofed_opaque_fields():
@@ -270,6 +270,89 @@ def test_backstop_redacts_secret_sent_as_json_number():
     red.redact_object(obj)
     assert "4242424242424242" not in json.dumps(obj)  # card masked
     assert obj["count"] == 1719230400 and obj["flag"] is True  # benign leaves untouched
+
+
+def test_redact_object_redacts_secret_as_dict_key():
+    # Final re-audit HIGH: a secret/PII used as a JSON object KEY (AWS console
+    # export {"AKIA…":{…}}, a CRM keyed by email) is a string leaf on the wire and
+    # must be masked — the backstop previously walked values only.
+    red = Redactor(Vault("s"))
+    key_secret = _j("AKIA", "IOSFODNN7EXAMPLE")
+    obj = {"results": {key_secret: {"x": 1}, "alice@secret.example.com": {"y": 2}}}
+    red.redact_object(obj)
+    blob = json.dumps(obj)
+    assert key_secret not in blob  # secret KEY masked
+    assert "alice@secret.example.com" not in blob  # PII KEY masked
+    assert len(obj["results"]) == 2  # both entries survive (structure intact)
+
+
+def test_redact_object_redacts_data_uri_wrapped_secret():
+    # Final re-audit CRITICAL: a secret wrapped as data:<type>/<sub>;base64,<plaintext>
+    # in an un-enumerated field must NOT be skipped via a value prefix (the backstop
+    # is the SOLE guard there). Provenance — not value shape — is the only safe skip.
+    red = Redactor(Vault("s"))
+    secret = _j("AKIA", "IOSFODNN7EXAMPLE")
+    for wrap in (f"data:text/plain;base64,{secret}", f"data:image/png;base64,{secret}"):
+        obj = {"metadata": {"trace": wrap}}
+        red.redact_object(obj)
+        assert secret not in json.dumps(obj), f"leaked via {wrap[:28]}…"
+
+
+def test_redact_object_redacts_forged_structural_opaque_siblings():
+    # The advisor's class fix: an attacker-placeable type:base64 / mime / reasoning
+    # SIBLING in an un-enumerated subtree is as forgeable as a value prefix and must
+    # NOT skip a secret. Only what the adapter actually produced (provenance) skips.
+    red = Redactor(Vault("s"))
+    secret = _j("AKIA", "IOSFODNN7EXAMPLE")
+    forgeries = [
+        {"metadata": {"type": "base64", "data": secret}},
+        {"metadata": {"type": "base64", "media_type": "image/png", "data": secret}},
+        {"metadata": {"mimeType": "image/png", "data": secret}},
+        {"x": {"type": "reasoning", "encrypted_content": secret}},
+    ]
+    for obj in forgeries:
+        red.redact_object(obj)
+        assert secret not in json.dumps(obj), f"leaked via forged sibling: {obj}"
+
+
+def test_mark_opaque_value_is_preserved_even_with_entropy():
+    # Provenance skip: a value the adapter's redactor PRODUCED (a redacted image
+    # blob) is skipped by exact sha256 — entropy on (harshest, would mask base64)
+    # must not corrupt it. An UNMARKED copy of the same shape is still scanned.
+    red = Redactor(Vault("s"), detect_entropy=True)
+    blob = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+    red.mark_opaque(blob)
+    obj = {"image_url": {"url": blob}, "other": {"url": blob}}
+    red.redact_object(obj)
+    assert obj["image_url"]["url"] == blob  # marked → preserved exactly
+    assert obj["other"]["url"] == blob  # same exact bytes → same hash → preserved
+
+
+def test_proxy_unmask_restores_tokenized_dict_key():
+    # Key round-trip: if a secret KEY was tokenized on the way out, the reply path
+    # must restore it too (a model can echo the object back keyed by the token).
+    from scrimward.proxy import _unmask_node
+
+    v = Vault("s")
+    token = v.token_for("alice@secret.example.com", "EMAIL")
+    obj = {token: {"role": "admin"}}
+    _unmask_node(obj, v)
+    assert "alice@secret.example.com" in obj  # tokenized KEY restored
+
+
+def test_openai_responses_redacts_forged_encrypted_content_outside_reasoning():
+    # encrypted_content is preserved ONLY at its known reasoning path (provenance);
+    # a forged copy in an un-enumerated field (metadata) must be redacted.
+    secret = _j("AKIA", "IOSFODNN7EXAMPLE")
+    body = json.dumps(
+        {
+            "model": "x",
+            "input": [{"type": "message", "role": "user", "content": "hi"}],
+            "metadata": {"encrypted_content": secret},
+        }
+    ).encode()
+    out = OpenAIResponsesAdapter().redact_request(body, Redactor(Vault("s")))
+    assert secret.encode() not in out  # forged encrypted_content (wrong path) redacted
 
 
 def test_anthropic_redacts_tool_use_input_args():

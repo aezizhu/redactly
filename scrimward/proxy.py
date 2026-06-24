@@ -145,8 +145,15 @@ def _unmask_node(node: object, vault: Vault) -> object:
     if isinstance(node, str):
         return vault.unmask(node)
     if isinstance(node, dict):
+        # Restore tokens in KEYS as well as values: the request side tokenizes a
+        # secret used as a dict key, so the reply must un-mask it back if a model
+        # echoes the object keyed by that token. Rebuild to remap keys in place.
+        rebuilt = {}
         for k in list(node.keys()):
-            node[k] = _unmask_node(node[k], vault)
+            nk = vault.unmask(k) if isinstance(k, str) else k
+            rebuilt[nk] = _unmask_node(node[k], vault)
+        node.clear()
+        node.update(rebuilt)
         return node
     if isinstance(node, list):
         for i in range(len(node)):

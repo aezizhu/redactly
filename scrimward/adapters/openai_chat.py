@@ -116,6 +116,7 @@ class OpenAIChatAdapter:
         img = part.get("image_url")
         try:
             img["url"] = redact_data_uri(img.get("url") if isinstance(img, dict) else None)
+            red.mark_opaque(img["url"])  # provenance: backstop must not re-scan it
         except (ImageRedactionError, AttributeError, TypeError) as exc:
             raise AttachmentRedactionUnsupported(
                 f"openai_chat: image could not be safely redacted ({exc}) — "
@@ -134,6 +135,7 @@ class OpenAIChatAdapter:
             file_obj["file_data"] = redact_pdf_data_uri(
                 file_obj.get("file_data") if isinstance(file_obj, dict) else None
             )
+            red.mark_opaque(file_obj["file_data"])  # provenance: backstop must not re-scan it
         except (ImageRedactionError, AttributeError, TypeError) as exc:
             raise AttachmentRedactionUnsupported(
                 f"openai_chat: file could not be safely redacted ({exc}) — "
