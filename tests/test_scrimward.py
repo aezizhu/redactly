@@ -745,6 +745,45 @@ def test_anthropic_pdf_fails_closed_when_disabled():
 
 
 @pytest.mark.skipif(not _VISION, reason="Apple Vision unavailable (non-macOS)")
+def test_openai_chat_redacts_pdf_file_when_enabled():
+    import base64
+
+    uri = "data:application/pdf;base64," + base64.b64encode(_text_pdf("SECRET AKIAIOSFODNN7EXAMPLE")).decode()
+    body = json.dumps(
+        {"model": "gpt-4o", "messages": [{"role": "user", "content": [{"type": "file", "file": {"file_data": uri, "filename": "x.pdf"}}]}]}
+    ).encode()
+    out = OpenAIChatAdapter().redact_request(body, Redactor(Vault("s"), redact_pdf=True))
+    new_uri = json.loads(out)["messages"][0]["content"][0]["file"]["file_data"]
+    assert new_uri != uri and base64.b64decode(new_uri.split(",", 1)[1]).startswith(b"%PDF")
+
+
+@pytest.mark.skipif(not _VISION, reason="Apple Vision unavailable (non-macOS)")
+def test_openai_responses_redacts_input_file_pdf_when_enabled():
+    import base64
+
+    uri = "data:application/pdf;base64," + base64.b64encode(_text_pdf("SECRET AKIAIOSFODNN7EXAMPLE")).decode()
+    body = json.dumps(
+        {"model": "gpt-5", "input": [{"type": "message", "role": "user", "content": [{"type": "input_file", "filename": "x.pdf", "file_data": uri}]}]}
+    ).encode()
+    out = OpenAIResponsesAdapter().redact_request(body, Redactor(Vault("s"), redact_pdf=True))
+    new_uri = json.loads(out)["input"][0]["content"][0]["file_data"]
+    assert new_uri != uri and base64.b64decode(new_uri.split(",", 1)[1]).startswith(b"%PDF")
+
+
+@pytest.mark.skipif(not _VISION, reason="Apple Vision unavailable (non-macOS)")
+def test_gemini_redacts_inline_pdf_when_enabled():
+    import base64
+
+    b64 = base64.b64encode(_text_pdf("SECRET AKIAIOSFODNN7EXAMPLE")).decode()
+    body = json.dumps(
+        {"contents": [{"role": "user", "parts": [{"inlineData": {"mimeType": "application/pdf", "data": b64}}]}]}
+    ).encode()
+    out = GeminiAdapter().redact_request(body, Redactor(Vault("s"), redact_pdf=True))
+    new_b64 = json.loads(out)["contents"][0]["parts"][0]["inlineData"]["data"]
+    assert new_b64 != b64 and base64.b64decode(new_b64).startswith(b"%PDF")
+
+
+@pytest.mark.skipif(not _VISION, reason="Apple Vision unavailable (non-macOS)")
 def test_pdf_redaction_handles_small_body_text():
     # The 72-DPI leak guard: ~12px body text would be missed if rendered 1:1.
     from scrimward.image_redactor import redact_pdf_bytes

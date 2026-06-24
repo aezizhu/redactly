@@ -30,7 +30,12 @@ from collections.abc import AsyncIterator, Mapping
 from ..engine import Redactor
 from ..vault import Vault
 from .anthropic import _find_sse_event_terminator, _parse_sse_event, _split_unmaskable
-from ..image_redactor import ImageRedactionError, image_redaction_available, redact_data_uri
+from ..image_redactor import (
+    ImageRedactionError,
+    image_redaction_available,
+    redact_data_uri,
+    redact_pdf_data_uri,
+)
 from .base import AttachmentRedactionUnsupported
 
 RESPONSES_PATH = "/v1/responses"
@@ -89,11 +94,9 @@ class OpenAIResponsesAdapter:
                 if ptype == "input_image":  # inline data URI → redact or fail closed
                     self._redact_input_image(part, red)
                     continue
-                if ptype == "input_file":  # un-redactable file → fail closed
-                    raise AttachmentRedactionUnsupported(
-                        "openai_responses: message contains an input_file part, "
-                        "which cannot be redacted yet — refusing to forward it (fail-closed)"
-                    )
+                if ptype == "input_file":  # inline PDF → redact or fail closed
+                    self._redact_input_file(part, red)
+                    continue
                 if isinstance(part.get("text"), str) and part.get("type", "input_text") in _TEXT_PART_TYPES:
                     part["text"] = red.redact_text(part["text"])
         # tool-output strings (shell stdout / patches) — high secret density.
@@ -113,6 +116,21 @@ class OpenAIResponsesAdapter:
         except (ImageRedactionError, TypeError) as exc:
             raise AttachmentRedactionUnsupported(
                 f"openai_responses: image could not be safely redacted ({exc}) — "
+                "refusing to forward it (fail-closed)"
+            ) from exc
+
+    def _redact_input_file(self, part: dict, red: Redactor) -> None:
+        """Redact an ``input_file`` part's inline PDF (``file_data``), or fail closed."""
+        if not (red.redact_pdf and image_redaction_available()):
+            raise AttachmentRedactionUnsupported(
+                "openai_responses: message contains an input_file part and PDF "
+                "redaction is off/unavailable — refusing to forward it (fail-closed)"
+            )
+        try:
+            part["file_data"] = redact_pdf_data_uri(part.get("file_data"))
+        except (ImageRedactionError, TypeError) as exc:
+            raise AttachmentRedactionUnsupported(
+                f"openai_responses: file could not be safely redacted ({exc}) — "
                 "refusing to forward it (fail-closed)"
             ) from exc
 

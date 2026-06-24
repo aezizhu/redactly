@@ -26,7 +26,12 @@ import json
 from collections.abc import AsyncIterator, Mapping
 
 from ..engine import Redactor
-from ..image_redactor import ImageRedactionError, image_redaction_available, redact_image_bytes
+from ..image_redactor import (
+    ImageRedactionError,
+    image_redaction_available,
+    redact_image_bytes,
+    redact_pdf_bytes,
+)
 from ..vault import Vault
 from .anthropic import _find_sse_event_terminator, _parse_sse_event, _split_unmaskable
 from .base import AttachmentRedactionUnsupported
@@ -109,24 +114,28 @@ class GeminiAdapter:
             if isinstance(part.get(key), dict):
                 blob = part[key]
                 break
-        mime = (blob.get("mimeType") or blob.get("mime_type") or "") if blob else ""
-        if not (blob and isinstance(mime, str) and mime.lower().startswith("image/")):
+        mime = (blob.get("mimeType") or blob.get("mime_type") or "").lower() if blob else ""
+        is_image = blob and mime.startswith("image/")
+        is_pdf = blob and mime == "application/pdf"
+        if not (is_image or is_pdf):  # fileData (URI) / audio / other → fail closed
             raise AttachmentRedactionUnsupported(
-                "gemini: request contains a non-image or URI binary part, which "
-                "cannot be redacted — refusing to forward it (fail-closed)"
+                "gemini: request contains a non-image/non-PDF or URI binary part, "
+                "which cannot be redacted — refusing to forward it (fail-closed)"
             )
-        if not (red.redact_images and image_redaction_available()):
+        gate = red.redact_pdf if is_pdf else red.redact_images
+        if not (gate and image_redaction_available()):
+            kind = "PDF" if is_pdf else "image"
             raise AttachmentRedactionUnsupported(
-                "gemini: request contains an inline image and image redaction is "
-                "off/unavailable — refusing to forward it (fail-closed)"
+                f"gemini: request contains an inline {kind} and {kind} redaction "
+                "is off/unavailable — refusing to forward it (fail-closed)"
             )
         try:
             raw = base64.b64decode(blob.get("data", ""), validate=True)
-            redacted = redact_image_bytes(raw, mime)
+            redacted = redact_pdf_bytes(raw) if is_pdf else redact_image_bytes(raw, mime)
         except (ImageRedactionError, ValueError, TypeError) as exc:
             raise AttachmentRedactionUnsupported(
-                f"gemini: image could not be safely redacted ({exc}) — refusing "
-                "to forward it (fail-closed)"
+                f"gemini: attachment could not be safely redacted ({exc}) — "
+                "refusing to forward it (fail-closed)"
             ) from exc
         blob["data"] = base64.b64encode(redacted).decode("ascii")
 

@@ -24,12 +24,17 @@ from .anthropic import (
     _parse_sse_event,
     _split_unmaskable,
 )
-from ..image_redactor import ImageRedactionError, image_redaction_available, redact_data_uri
+from ..image_redactor import (
+    ImageRedactionError,
+    image_redaction_available,
+    redact_data_uri,
+    redact_pdf_data_uri,
+)
 from .base import AttachmentRedactionUnsupported
 
 # Un-redactable binary attachment part types — the engine is text-only, so these
-# fail closed. (image_url is handled separately: redacted when enabled.)
-_BINARY_PART_TYPES = frozenset({"input_audio", "file"})
+# fail closed. (image_url + file are handled separately: redacted when enabled.)
+_BINARY_PART_TYPES = frozenset({"input_audio"})
 
 CHAT_COMPLETIONS_PATH = "/v1/chat/completions"
 
@@ -85,7 +90,9 @@ class OpenAIChatAdapter:
                 ptype = part.get("type")
                 if ptype == "image_url":
                     self._redact_image_url(part, red)
-                elif ptype in _BINARY_PART_TYPES:  # input_audio / file → fail closed
+                elif ptype == "file":
+                    self._redact_file(part, red)
+                elif ptype in _BINARY_PART_TYPES:  # input_audio → fail closed
                     raise AttachmentRedactionUnsupported(
                         f"openai_chat: message contains a {ptype} part, which "
                         "cannot be redacted yet — refusing to forward it (fail-closed)"
@@ -109,6 +116,24 @@ class OpenAIChatAdapter:
         except (ImageRedactionError, AttributeError, TypeError) as exc:
             raise AttachmentRedactionUnsupported(
                 f"openai_chat: image could not be safely redacted ({exc}) — "
+                "refusing to forward it (fail-closed)"
+            ) from exc
+
+    def _redact_file(self, part: dict, red: Redactor) -> None:
+        """Redact a ``file`` part's inline PDF (``file.file_data``), or fail closed."""
+        if not (red.redact_pdf and image_redaction_available()):
+            raise AttachmentRedactionUnsupported(
+                "openai_chat: message contains a file part and PDF redaction is "
+                "off/unavailable — refusing to forward it (fail-closed)"
+            )
+        file_obj = part.get("file")
+        try:
+            file_obj["file_data"] = redact_pdf_data_uri(
+                file_obj.get("file_data") if isinstance(file_obj, dict) else None
+            )
+        except (ImageRedactionError, AttributeError, TypeError) as exc:
+            raise AttachmentRedactionUnsupported(
+                f"openai_chat: file could not be safely redacted ({exc}) — "
                 "refusing to forward it (fail-closed)"
             ) from exc
 

@@ -32,6 +32,7 @@ import re
 # Inline image data URI: data:image/png;base64,<...>. Anything else (a remote
 # http(s) URL, a non-image MIME) is not locally redactable → the caller fails closed.
 _DATA_URI_RE = re.compile(r"^data:(?P<mime>image/[A-Za-z0-9.+-]+);base64,(?P<data>.+)$", re.DOTALL)
+_PDF_DATA_URI_RE = re.compile(r"^data:application/pdf;base64,(?P<data>.+)$", re.DOTALL)
 
 # Pad each fill box by this fraction of its size (OCR clips glyph edges + anti-alias).
 _PAD = 0.10
@@ -249,3 +250,20 @@ def redact_pdf_bytes(raw: bytes) -> bytes:
     out = io.BytesIO()
     redacted_pages[0].save(out, "PDF", save_all=True, append_images=redacted_pages[1:], resolution=72.0)
     return out.getvalue()
+
+
+def redact_pdf_data_uri(uri: str) -> str:
+    """Redact an inline ``data:application/pdf;base64,...`` URI → a new data URI.
+
+    Raises :class:`ImageRedactionError` if ``uri`` is not an inline base64 PDF
+    data URI or redaction fails — so the calling adapter fails closed.
+    """
+    match = _PDF_DATA_URI_RE.match(uri or "")
+    if match is None:
+        raise ImageRedactionError("not an inline base64 application/pdf data URI")
+    try:
+        raw = base64.b64decode(match.group("data"), validate=True)
+    except (ValueError, TypeError) as exc:
+        raise ImageRedactionError(f"pdf data URI base64 is invalid: {exc}") from exc
+    redacted = redact_pdf_bytes(raw)
+    return f"data:application/pdf;base64,{base64.b64encode(redacted).decode('ascii')}"
